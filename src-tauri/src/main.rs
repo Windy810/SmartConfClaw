@@ -535,6 +535,7 @@ struct AnalysisOutput {
     qa: Vec<Value>,
     graph_nodes: Vec<Value>,
     graph_edges: Vec<Value>,
+    references: Vec<Value>,
 }
 
 fn call_openrouter_analysis_once(
@@ -559,6 +560,9 @@ and output STRICT JSON with this exact shape:\n\
   ],\n\
   \"graphEdges\": [\n\
     {{\"source\": \"<node_id>\", \"target\": \"<node_id>\", \"relation\": \"<short relationship label>\"}}\n\
+  ],\n\
+  \"references\": [\n\
+    {{\"title\": \"<paper or article title>\", \"authors\": \"<author names>\", \"venue\": \"<journal/conference/blog>\", \"year\": \"<year>\", \"url\": \"<link to the paper or article>\", \"relevance\": \"<1 sentence explaining why this is relevant>\"}}\n\
   ]\n\
 }}\n\
 \n\
@@ -570,6 +574,9 @@ Constraints:\n\
 - graphEdges: 5-20 edges connecting nodes by their relationships\n\
 - All node ids must be lowercase_snake_case and unique\n\
 - All edge source/target must reference valid node ids\n\
+- references: 3-8 real, well-known papers or high-quality technical articles closely related to the transcript topics. \
+Prioritize seminal papers, recent survey papers, and authoritative blog posts. \
+Use real arxiv/doi/blog URLs when possible. If you are unsure of the exact URL, provide the best known citation info and leave url as an empty string.\n\
 \n\
 Transcript:\n{}",
         transcript
@@ -665,11 +672,17 @@ Transcript:\n{}",
         .cloned()
         .unwrap_or_default();
 
+    let references = parsed
+        .get("references")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
     if summary.is_empty() && qa.is_empty() {
         return Err("model output missing both summary and qa".to_string());
     }
 
-    Ok(AnalysisOutput { summary, tags, concepts, qa, graph_nodes, graph_edges })
+    Ok(AnalysisOutput { summary, tags, concepts, qa, graph_nodes, graph_edges, references })
 }
 
 fn call_openrouter_analysis(
@@ -1181,6 +1194,10 @@ fn generate_session_analysis(
         }))
         .unwrap_or_else(|_| "{}".to_string()),
     )?;
+    write(
+        "references.json",
+        &serde_json::to_string_pretty(&output.references).unwrap_or_else(|_| "[]".to_string()),
+    )?;
 
     if let Err(e) = merge_session_into_knowledge_base(
         &id,
@@ -1193,9 +1210,10 @@ fn generate_session_analysis(
     }
 
     let stats = format!(
-        "tags={} concepts={} nodes={} edges={}",
+        "tags={} concepts={} refs={} nodes={} edges={}",
         output.tags.len(),
         output.concepts.len(),
+        output.references.len(),
         output.graph_nodes.len(),
         output.graph_edges.len()
     );
@@ -1260,6 +1278,7 @@ fn get_session_data(id: String) -> String {
     let mut qa_simulator: Vec<Value> = vec![];
     let mut tags: Vec<Value> = vec![json!(format!("status:{capture_status}"))];
     let mut concepts: Vec<Value> = vec![];
+    let mut references: Vec<Value> = vec![];
 
     if let Some(dir) = capture_dir.as_ref() {
         if let Ok(summary) = fs::read_to_string(dir.join("summary.txt")) {
@@ -1289,6 +1308,13 @@ fn get_session_data(id: String) -> String {
                 }
             }
         }
+        if let Ok(raw) = fs::read_to_string(dir.join("references.json")) {
+            if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
+                if let Some(arr) = parsed.as_array() {
+                    references = arr.clone();
+                }
+            }
+        }
     }
 
     json!({
@@ -1299,7 +1325,8 @@ fn get_session_data(id: String) -> String {
       "concepts": concepts,
       "timeline": timeline,
       "extendedReport": extended_report,
-      "qaSimulator": qa_simulator
+      "qaSimulator": qa_simulator,
+      "references": references
     })
     .to_string()
 }

@@ -7,6 +7,16 @@ export interface AcademicSession {
   timeline: TimelineItem[];
   extendedReport: string;
   qaSimulator: QAMock[];
+  references: Reference[];
+}
+
+export interface Reference {
+  title: string;
+  authors: string;
+  venue: string;
+  year: string;
+  url: string;
+  relevance: string;
 }
 
 export interface TimelineItem {

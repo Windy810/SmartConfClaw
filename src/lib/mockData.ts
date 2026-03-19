@@ -109,6 +109,7 @@ export const mockAcademicSession: AcademicSession = {
       ],
     },
   ],
+  references: [],
 };
 
 export const mockGraphNodes: GraphNode[] = [
