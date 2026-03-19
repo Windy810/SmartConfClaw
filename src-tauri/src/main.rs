@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use tauri::{AppHandle, Emitter, Manager};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -24,6 +25,7 @@ struct ActiveCapture {
     audio_process: Option<Child>,
     frame_sampler_stop: Arc<AtomicBool>,
     frame_sampler_handle: Option<JoinHandle<()>>,
+    region: Option<CaptureRegion>,
 }
 
 #[derive(Clone)]
@@ -57,6 +59,15 @@ struct CaptureStartOptions {
     channels: Option<u8>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CaptureRegion {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
 static ACTIVE_CAPTURE: OnceLock<Mutex<Option<ActiveCapture>>> = OnceLock::new();
 static LAST_CAPTURE: OnceLock<Mutex<Option<CompletedCapture>>> = OnceLock::new();
 
@@ -88,17 +99,20 @@ fn build_capture_dir(session_id: &str) -> Result<PathBuf, String> {
     Ok(capture_dir)
 }
 
-fn capture_screenshot(path: &PathBuf) -> Result<(), String> {
-    let status = Command::new("screencapture")
-        .arg("-x")
-        .arg(path)
+fn capture_screenshot(path: &PathBuf, region: Option<&CaptureRegion>) -> Result<(), String> {
+    let mut cmd = Command::new("screencapture");
+    cmd.arg("-x");
+    if let Some(r) = region {
+        cmd.arg("-R")
+            .arg(format!("{},{},{},{}", r.x as i32, r.y as i32, r.width as i32, r.height as i32));
+    }
+    cmd.arg(path);
+    let status = cmd
         .status()
         .map_err(|error| format!("failed to invoke screencapture: {error}"))?;
-
     if !status.success() {
         return Err("screencapture returned non-zero status".to_string());
     }
-
     Ok(())
 }
 
@@ -109,7 +123,7 @@ fn hash_file(path: &PathBuf) -> Result<u64, String> {
     Ok(hasher.finish())
 }
 
-fn spawn_frame_sampler(dir: PathBuf, stop_signal: Arc<AtomicBool>, initial_hash: u64) -> JoinHandle<()> {
+fn spawn_frame_sampler(dir: PathBuf, stop_signal: Arc<AtomicBool>, initial_hash: u64, region: Option<CaptureRegion>) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut frame_index: u32 = 1;
         let mut last_hash: u64 = initial_hash;
@@ -121,7 +135,7 @@ fn spawn_frame_sampler(dir: PathBuf, stop_signal: Arc<AtomicBool>, initial_hash:
             }
 
             let temp_path = dir.join("frame-tmp.png");
-            if capture_screenshot(&temp_path).is_err() {
+            if capture_screenshot(&temp_path, region.as_ref()).is_err() {
                 let _ = fs::remove_file(&temp_path);
                 continue;
             }
@@ -647,7 +661,71 @@ fn list_audio_input_devices() -> Result<Vec<AudioInputDevice>, String> {
 }
 
 #[tauri::command]
-fn start_capture_session(options: Option<CaptureStartOptions>) -> Result<String, String> {
+fn open_region_selector(app: AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("region-selector") {
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+
+    let monitor = app
+        .primary_monitor()
+        .map_err(|e| format!("failed to get primary monitor: {e}"))?
+        .ok_or_else(|| "no primary monitor found".to_string())?;
+    let phys = monitor.size();
+    let scale = monitor.scale_factor();
+    let w = phys.width as f64 / scale;
+    let h = phys.height as f64 / scale;
+
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        "region-selector",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Select Capture Region")
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .position(0.0, 0.0)
+    .inner_size(w, h)
+    .build()
+    .map_err(|e| format!("failed to open region selector: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn close_region_selector(app: AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("region-selector") {
+        win.close().map_err(|e| format!("failed to close region selector: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn confirm_region_selection(region: Option<CaptureRegion>, app: AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("region-selector") {
+        let _ = win.close();
+    }
+    app.emit("region-confirmed", &region)
+        .map_err(|e| format!("failed to emit region-confirmed: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_region_selection(app: AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("region-selector") {
+        let _ = win.close();
+    }
+    app.emit("region-cancelled", ())
+        .map_err(|e| format!("failed to emit region-cancelled: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn start_capture_session(
+    options: Option<CaptureStartOptions>,
+    region: Option<CaptureRegion>,
+    app: AppHandle,
+) -> Result<String, String> {
     let mut store = active_capture_store()
         .lock()
         .map_err(|_| "failed to lock capture state".to_string())?;
@@ -675,7 +753,7 @@ fn start_capture_session(options: Option<CaptureStartOptions>) -> Result<String,
         .and_then(|value| value.channels)
         .unwrap_or(1);
 
-    capture_screenshot(&screenshot_path)?;
+    capture_screenshot(&screenshot_path, region.as_ref())?;
     let initial_hash = hash_file(&screenshot_path)?;
     let audio_process = spawn_audio_capture(
         &audio_path,
@@ -685,7 +763,12 @@ fn start_capture_session(options: Option<CaptureStartOptions>) -> Result<String,
         resolved_channels,
     )?;
     let stop_signal = Arc::new(AtomicBool::new(false));
-    let sampler_handle = spawn_frame_sampler(capture_dir.clone(), Arc::clone(&stop_signal), initial_hash);
+    let sampler_handle = spawn_frame_sampler(
+        capture_dir.clone(),
+        Arc::clone(&stop_signal),
+        initial_hash,
+        region.clone(),
+    );
 
     println!("start_capture_session invoked: {}", session_id);
 
@@ -696,13 +779,29 @@ fn start_capture_session(options: Option<CaptureStartOptions>) -> Result<String,
         audio_process,
         frame_sampler_stop: stop_signal,
         frame_sampler_handle: Some(sampler_handle),
+        region,
     });
+
+    if app.get_webview_window("floating-controller").is_none() {
+        let _ = tauri::WebviewWindowBuilder::new(
+            &app,
+            "floating-controller",
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .title("ScholarClaw Recording")
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .inner_size(300.0, 64.0)
+        .resizable(false)
+        .build();
+    }
 
     Ok(session_id)
 }
 
 #[tauri::command]
-fn stop_capture_session() -> Result<String, String> {
+fn stop_capture_session(app: AppHandle) -> Result<String, String> {
     let mut active_store = active_capture_store()
         .lock()
         .map_err(|_| "failed to lock capture state".to_string())?;
@@ -722,7 +821,7 @@ fn stop_capture_session() -> Result<String, String> {
     }
 
     let end_shot_path = current.dir.join("screen-stop.png");
-    let _ = capture_screenshot(&end_shot_path);
+    let _ = capture_screenshot(&end_shot_path, current.region.as_ref());
 
     println!("stop_capture_session invoked: {}", current.id);
 
@@ -736,6 +835,12 @@ fn stop_capture_session() -> Result<String, String> {
         .lock()
         .map_err(|_| "failed to lock last capture state".to_string())?;
     *last_store = Some(finished);
+
+    if let Some(win) = app.get_webview_window("floating-controller") {
+        let _ = win.close();
+    }
+
+    let _ = app.emit("capture-stopped", &current.id);
 
     Ok(current.id)
 }
@@ -964,6 +1069,10 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             check_capture_prerequisites,
             list_audio_input_devices,
+            open_region_selector,
+            close_region_selector,
+            confirm_region_selection,
+            cancel_region_selection,
             start_capture_session,
             stop_capture_session,
             transcribe_session_audio,

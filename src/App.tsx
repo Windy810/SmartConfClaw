@@ -1,18 +1,24 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 
+import { currentWindowLabel } from "./lib/windowLabel";
 import { mockAcademicSession, mockGraphEdges, mockGraphNodes } from "./lib/mockData";
 import {
   checkCapturePrerequisites,
   generateSessionAnalysis,
   getSessionData,
+  openRegionSelector,
   startCaptureSession,
   stopCaptureSession,
   transcribeSessionAudio,
 } from "./lib/tauri";
+import type { CaptureRegion } from "./lib/tauri";
 import { useSettingsStore } from "./store/settingsStore";
 import { useUiStore, type NavView } from "./store/uiStore";
+import { FloatingController } from "./components/FloatingController";
 import { GraphViewer } from "./components/GraphViewer";
 import { QAPanel } from "./components/QAPanel";
+import { RegionSelector } from "./components/RegionSelector";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { SessionViewer } from "./components/SessionViewer";
 import { Badge } from "./components/ui/badge";
@@ -57,7 +63,7 @@ function extractErrorMessage(error: unknown): string {
   return "Unknown error";
 }
 
-function App(): JSX.Element {
+function MainApp(): JSX.Element {
   const activeView = useUiStore((state) => state.activeView);
   const setActiveView = useUiStore((state) => state.setActiveView);
   const [isCapturing, setIsCapturing] = useState<boolean>(false);
@@ -90,20 +96,61 @@ function App(): JSX.Element {
     void loadPrerequisites();
   }, []);
 
+  const doStartCaptureRef = useRef<(region: CaptureRegion | null) => Promise<void>>();
+
+  doStartCaptureRef.current = useCallback(
+    async (region: CaptureRegion | null): Promise<void> => {
+      setIsBusy(true);
+      try {
+        const sessionId = await startCaptureSession(
+          { audioInputSpecs, sampleRate: audioSampleRate, channels: audioChannels },
+          region,
+        );
+        setCurrentSessionId(sessionId);
+        setIsCapturing(true);
+        setCaptureMessage(`Capture started: ${sessionId}`);
+      } catch (error) {
+        setCaptureMessage(`Failed to start capture: ${extractErrorMessage(error)}`);
+      } finally {
+        setIsBusy(false);
+      }
+    },
+    [audioInputSpecs, audioSampleRate, audioChannels],
+  );
+
+  useEffect(() => {
+    let unlistenConfirmed: (() => void) | undefined;
+    let unlistenCancelled: (() => void) | undefined;
+    let unlistenStopped: (() => void) | undefined;
+
+    const setup = async () => {
+      unlistenConfirmed = await listen<CaptureRegion | null>("region-confirmed", (event) => {
+        void doStartCaptureRef.current?.(event.payload);
+      });
+      unlistenCancelled = await listen("region-cancelled", () => {
+        setIsBusy(false);
+        setCaptureMessage("Region selection cancelled");
+      });
+      unlistenStopped = await listen<string>("capture-stopped", (event) => {
+        setIsCapturing(false);
+        setCaptureMessage(`Capture stopped: ${event.payload}`);
+      });
+    };
+
+    void setup();
+    return () => {
+      unlistenConfirmed?.();
+      unlistenCancelled?.();
+      unlistenStopped?.();
+    };
+  }, []);
+
   const handleStartCapture = async (): Promise<void> => {
     setIsBusy(true);
     try {
-      const sessionId = await startCaptureSession({
-        audioInputSpecs,
-        sampleRate: audioSampleRate,
-        channels: audioChannels,
-      });
-      setCurrentSessionId(sessionId);
-      setIsCapturing(true);
-      setCaptureMessage(`Capture started: ${sessionId}`);
+      await openRegionSelector();
     } catch (error) {
-      setCaptureMessage(`Failed to start capture: ${extractErrorMessage(error)}`);
-    } finally {
+      setCaptureMessage(`Failed to open region selector: ${extractErrorMessage(error)}`);
       setIsBusy(false);
     }
   };
@@ -251,6 +298,18 @@ function App(): JSX.Element {
       </div>
     </div>
   );
+}
+
+function App(): JSX.Element {
+  if (currentWindowLabel === "region-selector") {
+    return <RegionSelector />;
+  }
+
+  if (currentWindowLabel === "floating-controller") {
+    return <FloatingController />;
+  }
+
+  return <MainApp />;
 }
 
 export default App;

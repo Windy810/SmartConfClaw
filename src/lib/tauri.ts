@@ -21,6 +21,13 @@ export interface CaptureStartOptions {
   channels: number;
 }
 
+export interface CaptureRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface TranscribeOptions {
   provider: "whisper_cpp" | "openai_compatible";
   endpoint: string;
@@ -57,11 +64,49 @@ export async function listAudioInputDevices(): Promise<AudioInputDevice[]> {
   return invoke<AudioInputDevice[]>("list_audio_input_devices");
 }
 
-export async function startCaptureSession(options: CaptureStartOptions): Promise<string> {
+export async function openRegionSelector(): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  return invoke<void>("open_region_selector");
+}
+
+export async function closeRegionSelector(): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  return invoke<void>("close_region_selector");
+}
+
+export async function confirmRegionSelection(
+  region: CaptureRegion | null,
+): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  return invoke<void>("confirm_region_selection", {
+    region: region ?? null,
+  });
+}
+
+export async function cancelRegionSelection(): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  return invoke<void>("cancel_region_selection");
+}
+
+export async function startCaptureSession(
+  options: CaptureStartOptions,
+  region?: CaptureRegion | null,
+): Promise<string> {
   if (!isTauriRuntime()) {
     return "session-web-preview";
   }
-  return invoke<string>("start_capture_session", { options });
+  return invoke<string>("start_capture_session", {
+    options,
+    region: region ?? null,
+  });
 }
 
 export async function stopCaptureSession(): Promise<string> {
