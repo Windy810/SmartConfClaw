@@ -1,4 +1,4 @@
-# ScholarClaw
+# SmartConf Claw
 
 Desktop research copilot built with React, TypeScript, TailwindCSS, and Tauri v2.
 

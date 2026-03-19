@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { listAudioInputDevices, type AudioInputDevice } from "../lib/tauri";
-import { useSettingsStore, type AsrProvider, type ModelProvider, type ThemeDensity } from "../store/settingsStore";
+import { useSettingsStore, type AsrProvider, type ModelProvider, type ThemeMode } from "../store/settingsStore";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
@@ -11,8 +11,8 @@ interface ModelOption {
   label: string;
 }
 
-interface DensityOption {
-  id: ThemeDensity;
+interface ThemeModeOption {
+  id: ThemeMode;
   label: string;
 }
 
@@ -27,9 +27,10 @@ const modelOptions: ModelOption[] = [
   { id: "local", label: "Local (On-device)" },
 ];
 
-const densityOptions: DensityOption[] = [
-  { id: "compact", label: "Compact" },
-  { id: "comfortable", label: "Comfortable" },
+const themeModeOptions: ThemeModeOption[] = [
+  { id: "light", label: "Light" },
+  { id: "dark", label: "Dark" },
+  { id: "system", label: "System" },
 ];
 
 const asrProviderOptions: AsrProviderOption[] = [
@@ -41,7 +42,7 @@ export function SettingsPanel(): JSX.Element {
   const modelProvider = useSettingsStore((state) => state.modelProvider);
   const screenshotDirectory = useSettingsStore((state) => state.screenshotDirectory);
   const autoSummarizeOnCapture = useSettingsStore((state) => state.autoSummarizeOnCapture);
-  const themeDensity = useSettingsStore((state) => state.themeDensity);
+  const themeMode = useSettingsStore((state) => state.themeMode);
   const audioInputSpecs = useSettingsStore((state) => state.audioInputSpecs);
   const audioSampleRate = useSettingsStore((state) => state.audioSampleRate);
   const audioChannels = useSettingsStore((state) => state.audioChannels);
@@ -55,7 +56,7 @@ export function SettingsPanel(): JSX.Element {
   const setModelProvider = useSettingsStore((state) => state.setModelProvider);
   const setScreenshotDirectory = useSettingsStore((state) => state.setScreenshotDirectory);
   const setAutoSummarizeOnCapture = useSettingsStore((state) => state.setAutoSummarizeOnCapture);
-  const setThemeDensity = useSettingsStore((state) => state.setThemeDensity);
+  const setThemeMode = useSettingsStore((state) => state.setThemeMode);
   const setAudioInputSpecs = useSettingsStore((state) => state.setAudioInputSpecs);
   const setAudioSampleRate = useSettingsStore((state) => state.setAudioSampleRate);
   const setAudioChannels = useSettingsStore((state) => state.setAudioChannels);
@@ -217,23 +218,22 @@ export function SettingsPanel(): JSX.Element {
       <Card className="xl:col-span-2">
         <CardHeader>
           <CardTitle className="text-lg">Appearance</CardTitle>
-          <CardDescription>Use a denser layout for high-volume research workflows.</CardDescription>
+          <CardDescription>Choose light, dark, or follow system appearance.</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            {densityOptions.map((option) => (
+            {themeModeOptions.map((option) => (
               <Button
                 key={option.id}
                 size="sm"
-                variant={themeDensity === option.id ? "default" : "outline"}
-                onClick={() => setThemeDensity(option.id)}
+                variant={themeMode === option.id ? "default" : "outline"}
+                onClick={() => setThemeMode(option.id)}
               >
                 {option.label}
               </Button>
             ))}
           </div>
           <div className="flex items-center gap-2">
-            <Badge variant="secondary">Persistent via Zustand</Badge>
             <Button size="sm" variant="outline" onClick={resetDefaults}>
               Reset Defaults
             </Button>

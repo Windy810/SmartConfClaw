@@ -3,6 +3,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 
 export type ModelProvider = "openai" | "anthropic" | "local";
 export type ThemeDensity = "compact" | "comfortable";
+export type ThemeMode = "light" | "dark" | "system";
 export type AsrProvider = "whisper_cpp" | "openai_compatible";
 
 export interface AppSettings {
@@ -10,6 +11,7 @@ export interface AppSettings {
   screenshotDirectory: string;
   autoSummarizeOnCapture: boolean;
   themeDensity: ThemeDensity;
+  themeMode: ThemeMode;
   audioInputSpecs: string[];
   audioSampleRate: number;
   audioChannels: number;
@@ -27,6 +29,7 @@ interface SettingsState extends AppSettings {
   setScreenshotDirectory: (directory: string) => void;
   setAutoSummarizeOnCapture: (value: boolean) => void;
   setThemeDensity: (density: ThemeDensity) => void;
+  setThemeMode: (mode: ThemeMode) => void;
   setAudioInputSpecs: (specs: string[]) => void;
   setAudioSampleRate: (sampleRate: number) => void;
   setAudioChannels: (channels: number) => void;
@@ -45,6 +48,7 @@ const defaultSettings: AppSettings = {
   screenshotDirectory: "~/Library/Application Support/ScholarClaw/captures",
   autoSummarizeOnCapture: true,
   themeDensity: "comfortable",
+  themeMode: "system",
   audioInputSpecs: ["none:0"],
   audioSampleRate: 16000,
   audioChannels: 1,
@@ -65,6 +69,7 @@ export const useSettingsStore = create<SettingsState>()(
       setScreenshotDirectory: (directory) => set({ screenshotDirectory: directory }),
       setAutoSummarizeOnCapture: (value) => set({ autoSummarizeOnCapture: value }),
       setThemeDensity: (density) => set({ themeDensity: density }),
+      setThemeMode: (mode) => set({ themeMode: mode }),
       setAudioInputSpecs: (specs) => set({ audioInputSpecs: specs }),
       setAudioSampleRate: (sampleRate) => set({ audioSampleRate: sampleRate }),
       setAudioChannels: (channels) => set({ audioChannels: channels }),
@@ -85,6 +90,7 @@ export const useSettingsStore = create<SettingsState>()(
         screenshotDirectory: state.screenshotDirectory,
         autoSummarizeOnCapture: state.autoSummarizeOnCapture,
         themeDensity: state.themeDensity,
+        themeMode: state.themeMode,
         audioInputSpecs: state.audioInputSpecs,
         audioSampleRate: state.audioSampleRate,
         audioChannels: state.audioChannels,

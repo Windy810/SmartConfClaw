@@ -84,6 +84,24 @@ function MainApp(): JSX.Element {
   const asrLanguage = useSettingsStore((state) => state.asrLanguage);
   const openRouterModel = useSettingsStore((state) => state.openRouterModel);
   const openRouterApiKey = useSettingsStore((state) => state.openRouterApiKey);
+  const themeMode = useSettingsStore((state) => state.themeMode);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+
+    const applyTheme = (): void => {
+      const isDark = themeMode === "dark" || (themeMode === "system" && media.matches);
+      root.classList.toggle("dark", isDark);
+      root.style.colorScheme = isDark ? "dark" : "light";
+    };
+
+    applyTheme();
+    media.addEventListener("change", applyTheme);
+    return () => {
+      media.removeEventListener("change", applyTheme);
+    };
+  }, [themeMode]);
 
   useEffect(() => {
     const loadPrerequisites = async (): Promise<void> => {
@@ -262,10 +280,10 @@ function MainApp(): JSX.Element {
           <Card className="h-full overflow-hidden">
             <CardHeader className="space-y-3 border-b border-zinc-200/80 pb-4 dark:border-zinc-800">
               <div className="flex items-center justify-between">
-                <CardTitle className="text-lg">ScholarClaw</CardTitle>
-                <Badge variant="secondary">Hackathon</Badge>
+                <CardTitle className="text-lg">SmartConf Claw</CardTitle>
+                <Badge variant="secondary">Claw</Badge>
               </div>
-              <p className="text-xs text-zinc-500 dark:text-zinc-400">学术领航虾 · AI research copilot</p>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">智会虾 · AI conference assistant</p>
             </CardHeader>
             <CardContent className="p-3">
               <ScrollArea className="h-[calc(100vh-170px)]">
