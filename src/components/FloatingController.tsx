@@ -1,18 +1,10 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export function FloatingController(): JSX.Element {
   const [elapsed, setElapsed] = useState(0);
   const [stopping, setStopping] = useState(false);
-
-  useEffect(() => {
-    document.body.style.background = "transparent";
-    document.documentElement.style.background = "transparent";
-    return () => {
-      document.body.style.background = "";
-      document.documentElement.style.background = "";
-    };
-  }, []);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -39,6 +31,16 @@ export function FloatingController(): JSX.Element {
     }
   };
 
+  const handleDrag = async (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+    e.preventDefault();
+    try {
+      await getCurrentWindow().startDragging();
+    } catch {
+      // ignore if not supported
+    }
+  };
+
   return (
     <>
       <style>{`
@@ -49,6 +51,8 @@ export function FloatingController(): JSX.Element {
           50% { opacity: 0.25; }
         }
         .float-stop-btn {
+          position: relative;
+          z-index: 2;
           padding: 5px 18px;
           border-radius: 8px;
           border: none;
@@ -66,7 +70,7 @@ export function FloatingController(): JSX.Element {
       `}</style>
 
       <div
-        data-tauri-drag-region
+        onMouseDown={handleDrag}
         style={{
           width: "100%",
           height: "100%",
@@ -79,15 +83,24 @@ export function FloatingController(): JSX.Element {
           backdropFilter: "blur(24px)",
           WebkitBackdropFilter: "blur(24px)",
           border: "1px solid rgba(255,255,255,0.08)",
-          boxShadow: "0 8px 32px rgba(0,0,0,0.4), 0 0 0 0.5px rgba(255,255,255,0.06) inset",
+          boxShadow:
+            "0 8px 32px rgba(0,0,0,0.4), 0 0 0 0.5px rgba(255,255,255,0.06) inset",
           color: "white",
-          fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif",
+          fontFamily:
+            "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif",
           fontSize: 13,
           cursor: "grab",
           overflow: "hidden",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            pointerEvents: "none",
+          }}
+        >
           <div
             style={{
               width: 8,
@@ -98,7 +111,9 @@ export function FloatingController(): JSX.Element {
               boxShadow: "0 0 6px rgba(239,68,68,0.5)",
             }}
           />
-          <span style={{ fontWeight: 600, fontSize: 12, letterSpacing: 0.5 }}>REC</span>
+          <span style={{ fontWeight: 600, fontSize: 12, letterSpacing: 0.5 }}>
+            REC
+          </span>
         </div>
 
         <span
@@ -107,12 +122,17 @@ export function FloatingController(): JSX.Element {
             fontWeight: 500,
             fontSize: 15,
             letterSpacing: 0.5,
+            pointerEvents: "none",
           }}
         >
           {formatTime(elapsed)}
         </span>
 
-        <button className="float-stop-btn" disabled={stopping} onClick={handleStop}>
+        <button
+          className="float-stop-btn"
+          disabled={stopping}
+          onClick={handleStop}
+        >
           {stopping ? "..." : "Stop"}
         </button>
       </div>
