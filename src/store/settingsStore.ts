@@ -4,6 +4,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 export type ModelProvider = "openai" | "anthropic" | "local";
 export type ThemeDensity = "compact" | "comfortable";
 export type ThemeMode = "light" | "dark" | "system";
+export type AppLanguage = "en" | "zh";
 export type AsrProvider = "whisper_cpp" | "openai_compatible";
 
 export interface AppSettings {
@@ -12,6 +13,7 @@ export interface AppSettings {
   autoSummarizeOnCapture: boolean;
   themeDensity: ThemeDensity;
   themeMode: ThemeMode;
+  language: AppLanguage;
   audioInputSpecs: string[];
   audioSampleRate: number;
   audioChannels: number;
@@ -30,6 +32,7 @@ interface SettingsState extends AppSettings {
   setAutoSummarizeOnCapture: (value: boolean) => void;
   setThemeDensity: (density: ThemeDensity) => void;
   setThemeMode: (mode: ThemeMode) => void;
+  setLanguage: (lang: AppLanguage) => void;
   setAudioInputSpecs: (specs: string[]) => void;
   setAudioSampleRate: (sampleRate: number) => void;
   setAudioChannels: (channels: number) => void;
@@ -49,6 +52,7 @@ const defaultSettings: AppSettings = {
   autoSummarizeOnCapture: true,
   themeDensity: "comfortable",
   themeMode: "system",
+  language: "en",
   audioInputSpecs: ["none:0"],
   audioSampleRate: 16000,
   audioChannels: 1,
@@ -70,6 +74,7 @@ export const useSettingsStore = create<SettingsState>()(
       setAutoSummarizeOnCapture: (value) => set({ autoSummarizeOnCapture: value }),
       setThemeDensity: (density) => set({ themeDensity: density }),
       setThemeMode: (mode) => set({ themeMode: mode }),
+      setLanguage: (lang) => set({ language: lang }),
       setAudioInputSpecs: (specs) => set({ audioInputSpecs: specs }),
       setAudioSampleRate: (sampleRate) => set({ audioSampleRate: sampleRate }),
       setAudioChannels: (channels) => set({ audioChannels: channels }),
@@ -91,6 +96,7 @@ export const useSettingsStore = create<SettingsState>()(
         autoSummarizeOnCapture: state.autoSummarizeOnCapture,
         themeDensity: state.themeDensity,
         themeMode: state.themeMode,
+        language: state.language,
         audioInputSpecs: state.audioInputSpecs,
         audioSampleRate: state.audioSampleRate,
         audioChannels: state.audioChannels,

@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { useT } from "../lib/i18n";
 import type { QAMock } from "../types";
 import { Button } from "./ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
@@ -9,6 +10,7 @@ interface QAPanelProps {
 }
 
 export function QAPanel({ items }: QAPanelProps): JSX.Element {
+  const t = useT();
   const [expandedIndexMap, setExpandedIndexMap] = useState<Record<number, boolean>>({});
 
   const toggleCard = (index: number): void => {
@@ -26,13 +28,13 @@ export function QAPanel({ items }: QAPanelProps): JSX.Element {
           <Card key={`${item.question}-${index}`} className="border-zinc-200/80 bg-white/90 dark:border-zinc-800 dark:bg-zinc-900/90">
             <CardHeader className="space-y-2">
               <CardDescription className="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                PhD Interview Drill
+                {t("qa.drill")}
               </CardDescription>
               <CardTitle className="text-base leading-relaxed">{item.question}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
               <Button variant="outline" size="sm" onClick={() => toggleCard(index)}>
-                {isExpanded ? "Hide Answer Points" : "Reveal Suggested Answer Points"}
+                {isExpanded ? t("qa.hide") : t("qa.reveal")}
               </Button>
 
               {isExpanded ? (

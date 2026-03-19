@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useT } from "../lib/i18n";
 
 export function FloatingController(): JSX.Element {
+  const t = useT();
   const [elapsed, setElapsed] = useState(0);
   const [stopping, setStopping] = useState(false);
 
@@ -133,7 +135,7 @@ export function FloatingController(): JSX.Element {
           disabled={stopping}
           onClick={handleStop}
         >
-          {stopping ? "..." : "Stop"}
+          {stopping ? "..." : t("float.stop")}
         </button>
       </div>
     </>

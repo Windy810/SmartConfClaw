@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import ReactFlow, { Background, Controls, MarkerType, MiniMap, type Edge, type Node } from "reactflow";
 import "reactflow/dist/style.css";
 
+import { useT } from "../lib/i18n";
 import { getKnowledgeGraph } from "../lib/tauri";
 import type { GraphEdge, GraphNode } from "../types";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
@@ -20,6 +21,7 @@ function nodeColor(group: string): string {
 }
 
 export function GraphViewer(): JSX.Element {
+  const t = useT();
   const [nodes, setNodes] = useState<GraphNode[]>([]);
   const [edges, setEdges] = useState<GraphEdge[]>([]);
   const [loading, setLoading] = useState(true);
@@ -110,7 +112,7 @@ export function GraphViewer(): JSX.Element {
     <Card className="h-full">
       <CardHeader className="border-b border-zinc-200/80 pb-4 dark:border-zinc-800">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-lg">Knowledge Graph</CardTitle>
+          <CardTitle className="text-lg">{t("graph.title")}</CardTitle>
           <div className="flex items-center gap-2">
             {Object.entries(groupCounts).map(([group, count]) => (
               <Badge
@@ -123,7 +125,7 @@ export function GraphViewer(): JSX.Element {
               </Badge>
             ))}
             <Badge variant="secondary" className="text-xs">
-              {edges.length} edges
+              {edges.length} {t("graph.edges")}
             </Badge>
           </div>
         </div>
@@ -131,12 +133,12 @@ export function GraphViewer(): JSX.Element {
       <CardContent className="h-[680px] p-0">
         {loading ? (
           <div className="flex h-full items-center justify-center text-sm text-zinc-400">
-            Loading knowledge graph...
+            {t("graph.loading")}
           </div>
         ) : nodes.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-zinc-400">
-            <p>Knowledge graph is empty</p>
-            <p className="text-xs">Run "Generate AI" on a session to populate it</p>
+            <p>{t("graph.empty")}</p>
+            <p className="text-xs">{t("graph.emptyHint")}</p>
           </div>
         ) : (
           <ReactFlow

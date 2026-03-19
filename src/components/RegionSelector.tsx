@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useT } from "../lib/i18n";
 import { confirmRegionSelection, cancelRegionSelection } from "../lib/tauri";
 
 interface SelectionRect {
@@ -9,6 +10,7 @@ interface SelectionRect {
 }
 
 export function RegionSelector(): JSX.Element {
+  const t = useT();
   const [selection, setSelection] = useState<SelectionRect | null>(null);
   const [dragOrigin, setDragOrigin] = useState<{ x: number; y: number } | null>(null);
   const [confirmed, setConfirmed] = useState(false);
@@ -184,10 +186,10 @@ export function RegionSelector(): JSX.Element {
             }}
           >
             <p style={{ fontSize: 20, fontWeight: 600, letterSpacing: -0.3 }}>
-              拖拽鼠标选择截屏区域
+              {t("region.dragHint")}
             </p>
             <p style={{ fontSize: 14, opacity: 0.6, marginTop: 8 }}>
-              或点击下方按钮选择全屏 · 按 Esc 取消
+              {t("region.subHint")}
             </p>
           </div>
         )}
@@ -207,18 +209,18 @@ export function RegionSelector(): JSX.Element {
           {confirmed && (
             <>
               <button className="region-btn region-btn-primary" onClick={handleConfirm}>
-                确认选区
+                {t("region.confirm")}
               </button>
               <button className="region-btn region-btn-secondary" onClick={handleReset}>
-                重新选择
+                {t("region.reset")}
               </button>
             </>
           )}
           <button className="region-btn region-btn-secondary" onClick={handleFullScreen}>
-            全屏捕获
+            {t("region.fullscreen")}
           </button>
           <button className="region-btn region-btn-cancel" onClick={handleCancel}>
-            取消
+            {t("region.cancel")}
           </button>
         </div>
       </div>

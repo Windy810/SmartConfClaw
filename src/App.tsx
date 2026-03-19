@@ -14,6 +14,7 @@ import {
   transcribeSessionAudio,
 } from "./lib/tauri";
 import type { CaptureRegion, CaptureSessionMeta } from "./lib/tauri";
+import { useT } from "./lib/i18n";
 import { useSettingsStore } from "./store/settingsStore";
 import { useUiStore, type NavView } from "./store/uiStore";
 import { FloatingController } from "./components/FloatingController";
@@ -28,16 +29,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { ScrollArea } from "./components/ui/scroll-area";
 import type { AcademicSession } from "./types";
 
-interface NavItem {
-  id: NavView;
-  label: string;
-}
-
-const navItems: NavItem[] = [
-  { id: "capture", label: "Meeting Capture" },
-  { id: "graph", label: "Knowledge Graph" },
-  { id: "qa", label: "Q&A Simulator" },
-  { id: "settings", label: "Settings" },
+const navKeys: { id: NavView; labelKey: "nav.capture" | "nav.graph" | "nav.qa" | "nav.settings" }[] = [
+  { id: "capture", labelKey: "nav.capture" },
+  { id: "graph", labelKey: "nav.graph" },
+  { id: "qa", labelKey: "nav.qa" },
+  { id: "settings", labelKey: "nav.settings" },
 ];
 
 function extractErrorMessage(error: unknown): string {
@@ -65,6 +61,7 @@ function extractErrorMessage(error: unknown): string {
 }
 
 function MainApp(): JSX.Element {
+  const t = useT();
   const activeView = useUiStore((state) => state.activeView);
   const setActiveView = useUiStore((state) => state.setActiveView);
   const [isCapturing, setIsCapturing] = useState<boolean>(false);
@@ -283,12 +280,12 @@ function MainApp(): JSX.Element {
                 <CardTitle className="text-lg">SmartConf Claw</CardTitle>
                 <Badge variant="secondary">Claw</Badge>
               </div>
-              <p className="text-xs text-zinc-500 dark:text-zinc-400">智会虾 · AI conference assistant</p>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">{t("app.subtitle")}</p>
             </CardHeader>
             <CardContent className="p-3">
               <ScrollArea className="h-[calc(100vh-170px)]">
                 <nav className="space-y-1">
-                  {navItems.map((item) => {
+                  {navKeys.map((item) => {
                     const isActive = activeView === item.id;
                     return (
                       <Button
@@ -297,7 +294,7 @@ function MainApp(): JSX.Element {
                         className="w-full justify-start"
                         onClick={() => setActiveView(item.id)}
                       >
-                        {item.label}
+                        {t(item.labelKey)}
                       </Button>
                     );
                   })}
@@ -317,7 +314,7 @@ function MainApp(): JSX.Element {
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div className="flex items-center gap-2">
                           <Badge variant={isCapturing ? "default" : "secondary"}>
-                            {isCapturing ? "Capturing" : "Idle"}
+                            {isCapturing ? t("capture.capturing") : t("capture.idle")}
                           </Badge>
                           <p className="text-sm text-zinc-600 dark:text-zinc-300">{captureMessage}</p>
                         </div>
@@ -327,22 +324,22 @@ function MainApp(): JSX.Element {
                             size="sm"
                             onClick={toggleSessionPicker}
                           >
-                            {showSessionPicker ? "Hide Sessions" : "Browse Sessions"}
+                            {showSessionPicker ? t("capture.hideSessions") : t("capture.browseSessions")}
                           </Button>
                           <Button variant="outline" size="sm" disabled={isBusy} onClick={handleLoadSession}>
-                            Sync Session
+                            {t("capture.syncSession")}
                           </Button>
                           <Button variant="outline" size="sm" disabled={isBusy} onClick={handleTranscribe}>
-                            Transcribe
+                            {t("capture.transcribe")}
                           </Button>
                           <Button variant="outline" size="sm" disabled={isBusy} onClick={handleGenerateAnalysis}>
-                            Generate AI
+                            {t("capture.generateAi")}
                           </Button>
                           <Button variant="outline" size="sm" disabled={isBusy || !isCapturing} onClick={handleStopCapture}>
-                            Stop
+                            {t("capture.stop")}
                           </Button>
                           <Button size="sm" disabled={isBusy || isCapturing} onClick={handleStartCapture}>
-                            Start Capture
+                            {t("capture.startCapture")}
                           </Button>
                         </div>
                       </div>
@@ -351,7 +348,7 @@ function MainApp(): JSX.Element {
                         <div className="rounded-xl border border-zinc-200/80 bg-zinc-50/80 p-3 dark:border-zinc-800 dark:bg-zinc-900/60">
                           <div className="mb-2 flex items-center justify-between">
                             <h3 className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">
-                              Local Sessions ({sessionList.length})
+                              {t("sessions.title")} ({sessionList.length})
                             </h3>
                             <Button
                               variant="ghost"
@@ -359,12 +356,12 @@ function MainApp(): JSX.Element {
                               className="h-7 text-xs"
                               onClick={() => void refreshSessionList()}
                             >
-                              Refresh
+                              {t("sessions.refresh")}
                             </Button>
                           </div>
                           {sessionList.length === 0 ? (
                             <p className="py-4 text-center text-xs text-zinc-400">
-                              No local sessions found. Start a capture to create one.
+                              {t("sessions.empty")}
                             </p>
                           ) : (
                             <div className="max-h-[240px] space-y-1.5 overflow-y-auto pr-1">
@@ -400,16 +397,16 @@ function MainApp(): JSX.Element {
                                               : "text-zinc-400 dark:text-zinc-500"
                                           }`}
                                         >
-                                          {s.frameCount} frames
+                                          {s.frameCount} {t("sessions.frames")}
                                         </span>
                                         {s.hasAudio ? (
-                                          <span className="text-[10px] text-emerald-500">audio</span>
+                                          <span className="text-[10px] text-emerald-500">{t("sessions.audio")}</span>
                                         ) : null}
                                         {s.hasTranscript ? (
-                                          <span className="text-[10px] text-blue-500">transcript</span>
+                                          <span className="text-[10px] text-blue-500">{t("sessions.transcript")}</span>
                                         ) : null}
                                         {s.hasSummary ? (
-                                          <span className="text-[10px] text-violet-500">analyzed</span>
+                                          <span className="text-[10px] text-violet-500">{t("sessions.analyzed")}</span>
                                         ) : null}
                                       </div>
                                     </div>

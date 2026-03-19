@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
+import { useT } from "../lib/i18n";
 import type { AcademicSession, TimelineItem } from "../types";
 import { Badge } from "./ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
@@ -27,6 +28,7 @@ function resolveScreenshot(path: string): string {
 }
 
 export function SessionViewer({ session }: SessionViewerProps): JSX.Element {
+  const t = useT();
   const [activeTimelineId, setActiveTimelineId] = useState<string>(session.timeline[0]?.id ?? "");
 
   // Reset selected timeline item when session changes
@@ -43,7 +45,7 @@ export function SessionViewer({ session }: SessionViewerProps): JSX.Element {
     return (
       <Card className="h-full">
         <CardHeader>
-          <CardTitle>No timeline data</CardTitle>
+          <CardTitle>{t("viewer.noTimeline")}</CardTitle>
         </CardHeader>
       </Card>
     );
@@ -94,7 +96,7 @@ export function SessionViewer({ session }: SessionViewerProps): JSX.Element {
               className="h-auto w-full rounded-xl border border-zinc-200 object-cover shadow-sm dark:border-zinc-800"
             />
             <div className="rounded-xl border border-zinc-200/80 bg-zinc-50/60 p-4 dark:border-zinc-800 dark:bg-zinc-900/50">
-              <h3 className="mb-2 text-sm font-semibold text-zinc-800 dark:text-zinc-200">Original Transcript</h3>
+              <h3 className="mb-2 text-sm font-semibold text-zinc-800 dark:text-zinc-200">{t("viewer.originalTranscript")}</h3>
               <p className="text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">{activeItem.originalTranscript}</p>
             </div>
           </div>
@@ -103,11 +105,11 @@ export function SessionViewer({ session }: SessionViewerProps): JSX.Element {
 
       <Card className="min-h-0">
         <CardHeader className="border-b border-zinc-200/80 pb-4 dark:border-zinc-800">
-          <CardTitle className="text-lg">AI Analysis</CardTitle>
+          <CardTitle className="text-lg">{t("viewer.aiAnalysis")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-5 p-4">
           <div className="rounded-xl border border-zinc-200/80 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-            <h3 className="mb-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">Summary</h3>
+            <h3 className="mb-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">{t("viewer.summary")}</h3>
             <p className="text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">
               {session.extendedReport || activeItem.summary}
             </p>
@@ -116,7 +118,7 @@ export function SessionViewer({ session }: SessionViewerProps): JSX.Element {
           {session.concepts && session.concepts.length > 0 ? (
             <div className="rounded-xl border border-zinc-200/80 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
               <h3 className="mb-3 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-                Key Concepts ({session.concepts.length})
+                {t("viewer.keyConcepts")} ({session.concepts.length})
               </h3>
               <div className="space-y-3">
                 {session.concepts.map((concept) => (
@@ -131,7 +133,7 @@ export function SessionViewer({ session }: SessionViewerProps): JSX.Element {
 
           <div className="rounded-xl border border-zinc-200/80 bg-zinc-50/60 p-4 dark:border-zinc-800 dark:bg-zinc-900/50">
             <h3 className="mb-3 text-sm font-semibold text-zinc-800 dark:text-zinc-200">
-              Related Papers & Articles
+              {t("viewer.relatedPapers")}
               {session.references && session.references.length > 0
                 ? ` (${session.references.length})`
                 : ""}
@@ -177,7 +179,7 @@ export function SessionViewer({ session }: SessionViewerProps): JSX.Element {
               </div>
             ) : (
               <p className="text-xs text-zinc-400">
-                Run AI analysis to discover related papers and articles.
+                {t("viewer.relatedPapersEmpty")}
               </p>
             )}
           </div>
