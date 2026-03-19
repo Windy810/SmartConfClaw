@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 import type { AcademicSession, TimelineItem } from "../types";
@@ -28,6 +28,11 @@ function resolveScreenshot(path: string): string {
 
 export function SessionViewer({ session }: SessionViewerProps): JSX.Element {
   const [activeTimelineId, setActiveTimelineId] = useState<string>(session.timeline[0]?.id ?? "");
+
+  // Reset selected timeline item when session changes
+  useEffect(() => {
+    setActiveTimelineId(session.timeline[0]?.id ?? "");
+  }, [session.id, session.timeline]);
 
   const activeItem = useMemo<TimelineItem | undefined>(
     () => session.timeline.find((item) => item.id === activeTimelineId) ?? session.timeline[0],

@@ -116,6 +116,27 @@ export async function stopCaptureSession(): Promise<string> {
   return invoke<string>("stop_capture_session");
 }
 
+export interface CaptureSessionMeta {
+  id: string;
+  hasAudio: boolean;
+  hasTranscript: boolean;
+  hasSummary: boolean;
+  frameCount: number;
+  tags: string[];
+  isRunning: boolean;
+}
+
+export async function listCaptureSessions(): Promise<CaptureSessionMeta[]> {
+  if (!isTauriRuntime()) {
+    return [];
+  }
+  const payload = await invoke<CaptureSessionMeta[] | string>("list_capture_sessions");
+  if (typeof payload === "string") {
+    return JSON.parse(payload) as CaptureSessionMeta[];
+  }
+  return payload;
+}
+
 export async function getSessionData(id: string): Promise<AcademicSession> {
   if (!isTauriRuntime()) {
     return { ...mockAcademicSession, id };

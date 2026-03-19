@@ -361,6 +361,17 @@ fn build_timeline_from_dir(capture_dir: &PathBuf) -> Vec<Value> {
         .collect()
 }
 
+fn captures_root_dir() -> Option<PathBuf> {
+    let home = env::var("HOME").ok()?;
+    Some(
+        PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("ScholarClaw")
+            .join("captures"),
+    )
+}
+
 fn resolve_capture_dir_for_id(id: &str) -> Option<PathBuf> {
     if let Ok(store) = active_capture_store().lock() {
         if let Some(active) = store.as_ref() {
@@ -378,7 +389,12 @@ fn resolve_capture_dir_for_id(id: &str) -> Option<PathBuf> {
         }
     }
 
-    None
+    let dir = captures_root_dir()?.join(id);
+    if dir.is_dir() {
+        Some(dir)
+    } else {
+        None
+    }
 }
 
 fn is_capture_running(id: &str) -> bool {
@@ -1189,33 +1205,25 @@ fn generate_session_analysis(
 #[tauri::command]
 fn get_session_data(id: String) -> String {
     println!("get_session_data invoked with id: {}", id);
-    let mut capture_dir: Option<PathBuf> = None;
-    let mut report_note = "Returning fallback mock payload (no capture directory found)".to_string();
     let mut capture_status = "idle".to_string();
+    let mut report_note = "Returning fallback mock payload (no capture directory found)".to_string();
 
-    if let Ok(store) = active_capture_store().lock() {
-        if let Some(active) = store.as_ref() {
-            if active.id == id {
-                capture_dir = Some(active.dir.clone());
-                capture_status = "running".to_string();
-                report_note = format!("Capture is running. Output directory: {}", active.dir.to_string_lossy());
-            }
+    // Determine capture status from memory stores
+    if is_capture_running(&id) {
+        capture_status = "running".to_string();
+    } else if let Ok(store) = last_capture_store().lock() {
+        if store.as_ref().map(|l| l.id == id).unwrap_or(false) {
+            capture_status = "stopped".to_string();
         }
     }
 
-    if capture_dir.is_none() {
-        if let Ok(store) = last_capture_store().lock() {
-            if let Some(last) = store.as_ref() {
-                if last.id == id {
-                    capture_dir = Some(last.dir.clone());
-                    capture_status = "stopped".to_string();
-                    report_note = format!(
-                        "Capture completed. Output directory: {}. First screenshot: {}",
-                        last.dir.to_string_lossy(),
-                        last.first_screenshot_path.to_string_lossy()
-                    );
-                }
-            }
+    // Use the unified resolver which includes filesystem fallback for historical sessions
+    let capture_dir = resolve_capture_dir_for_id(&id);
+
+    if let Some(ref dir) = capture_dir {
+        report_note = format!("Session directory: {}", dir.to_string_lossy());
+        if capture_status == "idle" {
+            capture_status = "history".to_string();
         }
     }
 
@@ -1297,6 +1305,72 @@ fn get_session_data(id: String) -> String {
 }
 
 #[tauri::command]
+fn list_capture_sessions() -> String {
+    let root = match captures_root_dir() {
+        Some(d) if d.is_dir() => d,
+        _ => return "[]".to_string(),
+    };
+    let mut sessions: Vec<Value> = Vec::new();
+
+    let mut entries: Vec<_> = match fs::read_dir(&root) {
+        Ok(rd) => rd.filter_map(|e| e.ok()).collect(),
+        Err(_) => return "[]".to_string(),
+    };
+    entries.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+
+    for entry in entries {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        if !name.starts_with("session-") {
+            continue;
+        }
+
+        let has_audio = path.join("audio.wav").exists();
+        let has_transcript = path.join("transcript.txt").exists();
+        let has_summary = path.join("summary.txt").exists();
+        let frame_count = fs::read_dir(&path)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter(|e| {
+                        e.file_name()
+                            .to_str()
+                            .map(|n| n.starts_with("frame-") && n.ends_with(".png"))
+                            .unwrap_or(false)
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+
+        let tags: Vec<Value> = if let Ok(raw) = fs::read_to_string(path.join("tags.json")) {
+            serde_json::from_str(&raw).unwrap_or_default()
+        } else {
+            vec![]
+        };
+
+        let is_running = is_capture_running(&name);
+
+        sessions.push(json!({
+            "id": name,
+            "hasAudio": has_audio,
+            "hasTranscript": has_transcript,
+            "hasSummary": has_summary,
+            "frameCount": frame_count,
+            "tags": tags,
+            "isRunning": is_running
+        }));
+    }
+
+    serde_json::to_string(&sessions).unwrap_or_else(|_| "[]".to_string())
+}
+
+#[tauri::command]
 fn get_knowledge_graph() -> String {
     let graph_path = match knowledge_base_dir() {
         Ok(dir) => dir.join("global_graph.json"),
@@ -1334,6 +1408,7 @@ fn main() {
             transcribe_session_audio,
             generate_session_analysis,
             get_session_data,
+            list_capture_sessions,
             get_knowledge_graph,
             get_all_sessions
         ])
