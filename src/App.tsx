@@ -74,6 +74,7 @@ function MainApp(): JSX.Element {
   const audioInputSpecs = useSettingsStore((state) => state.audioInputSpecs);
   const audioSampleRate = useSettingsStore((state) => state.audioSampleRate);
   const audioChannels = useSettingsStore((state) => state.audioChannels);
+  const frameIntervalSec = useSettingsStore((state) => state.frameIntervalSec);
   const asrProvider = useSettingsStore((state) => state.asrProvider);
   const asrEndpoint = useSettingsStore((state) => state.asrEndpoint);
   const asrApiKey = useSettingsStore((state) => state.asrApiKey);
@@ -121,7 +122,12 @@ function MainApp(): JSX.Element {
       setIsBusy(true);
       try {
         const sessionId = await startCaptureSession(
-          { audioInputSpecs, sampleRate: audioSampleRate, channels: audioChannels },
+          {
+            audioInputSpecs,
+            sampleRate: audioSampleRate,
+            channels: audioChannels,
+            frameIntervalSec,
+          },
           region,
         );
         setCurrentSessionId(sessionId);
@@ -133,7 +139,7 @@ function MainApp(): JSX.Element {
         setIsBusy(false);
       }
     },
-    [audioInputSpecs, audioSampleRate, audioChannels],
+    [audioInputSpecs, audioSampleRate, audioChannels, frameIntervalSec],
   );
 
   useEffect(() => {

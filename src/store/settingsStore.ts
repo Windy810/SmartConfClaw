@@ -17,6 +17,7 @@ export interface AppSettings {
   audioInputSpecs: string[];
   audioSampleRate: number;
   audioChannels: number;
+  frameIntervalSec: number;
   asrProvider: AsrProvider;
   asrEndpoint: string;
   asrApiKey: string;
@@ -36,6 +37,7 @@ interface SettingsState extends AppSettings {
   setAudioInputSpecs: (specs: string[]) => void;
   setAudioSampleRate: (sampleRate: number) => void;
   setAudioChannels: (channels: number) => void;
+  setFrameIntervalSec: (sec: number) => void;
   setAsrProvider: (provider: AsrProvider) => void;
   setAsrEndpoint: (endpoint: string) => void;
   setAsrApiKey: (apiKey: string) => void;
@@ -56,6 +58,7 @@ const defaultSettings: AppSettings = {
   audioInputSpecs: ["none:0"],
   audioSampleRate: 16000,
   audioChannels: 1,
+  frameIntervalSec: 2,
   asrProvider: "whisper_cpp",
   asrEndpoint: "http://127.0.0.1:8080/inference",
   asrApiKey: "",
@@ -78,6 +81,7 @@ export const useSettingsStore = create<SettingsState>()(
       setAudioInputSpecs: (specs) => set({ audioInputSpecs: specs }),
       setAudioSampleRate: (sampleRate) => set({ audioSampleRate: sampleRate }),
       setAudioChannels: (channels) => set({ audioChannels: channels }),
+      setFrameIntervalSec: (sec) => set({ frameIntervalSec: Number.isFinite(sec) ? Math.max(1, Math.min(60, Math.floor(sec))) : 2 }),
       setAsrProvider: (provider) => set({ asrProvider: provider }),
       setAsrEndpoint: (endpoint) => set({ asrEndpoint: endpoint }),
       setAsrApiKey: (apiKey) => set({ asrApiKey: apiKey }),
@@ -100,6 +104,7 @@ export const useSettingsStore = create<SettingsState>()(
         audioInputSpecs: state.audioInputSpecs,
         audioSampleRate: state.audioSampleRate,
         audioChannels: state.audioChannels,
+        frameIntervalSec: state.frameIntervalSec,
         asrProvider: state.asrProvider,
         asrEndpoint: state.asrEndpoint,
         asrApiKey: state.asrApiKey,

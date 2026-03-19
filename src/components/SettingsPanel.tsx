@@ -50,6 +50,7 @@ export function SettingsPanel(): JSX.Element {
   const audioInputSpecs = useSettingsStore((state) => state.audioInputSpecs);
   const audioSampleRate = useSettingsStore((state) => state.audioSampleRate);
   const audioChannels = useSettingsStore((state) => state.audioChannels);
+  const frameIntervalSec = useSettingsStore((state) => state.frameIntervalSec);
   const asrProvider = useSettingsStore((state) => state.asrProvider);
   const asrEndpoint = useSettingsStore((state) => state.asrEndpoint);
   const asrApiKey = useSettingsStore((state) => state.asrApiKey);
@@ -65,6 +66,7 @@ export function SettingsPanel(): JSX.Element {
   const setAudioInputSpecs = useSettingsStore((state) => state.setAudioInputSpecs);
   const setAudioSampleRate = useSettingsStore((state) => state.setAudioSampleRate);
   const setAudioChannels = useSettingsStore((state) => state.setAudioChannels);
+  const setFrameIntervalSec = useSettingsStore((state) => state.setFrameIntervalSec);
   const setAsrProvider = useSettingsStore((state) => state.setAsrProvider);
   const setAsrEndpoint = useSettingsStore((state) => state.setAsrEndpoint);
   const setAsrApiKey = useSettingsStore((state) => state.setAsrApiKey);
@@ -78,6 +80,7 @@ export function SettingsPanel(): JSX.Element {
   const [draftAudioInputText, setDraftAudioInputText] = useState<string>(audioInputSpecs.join("\n"));
   const [draftSampleRate, setDraftSampleRate] = useState<string>(String(audioSampleRate));
   const [draftChannels, setDraftChannels] = useState<string>(String(audioChannels));
+  const [draftFrameIntervalSec, setDraftFrameIntervalSec] = useState<string>(String(frameIntervalSec));
   const [draftAsrEndpoint, setDraftAsrEndpoint] = useState<string>(asrEndpoint);
   const [draftAsrApiKey, setDraftAsrApiKey] = useState<string>(asrApiKey);
   const [draftAsrModel, setDraftAsrModel] = useState<string>(asrModel);
@@ -183,6 +186,21 @@ export function SettingsPanel(): JSX.Element {
                 placeholder="Channels"
               />
             </div>
+            <div className="space-y-1">
+              <label htmlFor="frame-interval-sec" className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
+                {t("settings.frameInterval")}
+              </label>
+              <input
+                id="frame-interval-sec"
+                type="number"
+                min={1}
+                max={60}
+                value={draftFrameIntervalSec}
+                onChange={(event) => setDraftFrameIntervalSec(event.target.value)}
+                className={inputCls}
+                placeholder={t("settings.frameIntervalHint")}
+              />
+            </div>
             <Button
               size="sm"
               variant="outline"
@@ -194,6 +212,7 @@ export function SettingsPanel(): JSX.Element {
                 setAudioInputSpecs(specs.length > 0 ? specs : ["none:0"]);
                 setAudioSampleRate(Number.parseInt(draftSampleRate, 10) || 16000);
                 setAudioChannels(Number.parseInt(draftChannels, 10) || 1);
+                setFrameIntervalSec(Number.parseInt(draftFrameIntervalSec, 10) || 2);
               }}
             >
               {t("settings.saveAudioConfig")}

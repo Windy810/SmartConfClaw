@@ -57,6 +57,7 @@ struct CaptureStartOptions {
     audio_input_specs: Vec<String>,
     sample_rate: Option<u32>,
     channels: Option<u8>,
+    frame_interval_sec: Option<u64>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -66,6 +67,12 @@ struct CaptureRegion {
     y: f64,
     width: f64,
     height: f64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CaptureMeta {
+    frame_interval_sec: u64,
 }
 
 static ACTIVE_CAPTURE: OnceLock<Mutex<Option<ActiveCapture>>> = OnceLock::new();
@@ -123,13 +130,19 @@ fn hash_file(path: &PathBuf) -> Result<u64, String> {
     Ok(hasher.finish())
 }
 
-fn spawn_frame_sampler(dir: PathBuf, stop_signal: Arc<AtomicBool>, initial_hash: u64, region: Option<CaptureRegion>) -> JoinHandle<()> {
+fn spawn_frame_sampler(
+    dir: PathBuf,
+    stop_signal: Arc<AtomicBool>,
+    initial_hash: u64,
+    region: Option<CaptureRegion>,
+    frame_interval_sec: u64,
+) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut frame_index: u32 = 1;
         let mut last_hash: u64 = initial_hash;
 
         loop {
-            thread::sleep(Duration::from_secs(2));
+            thread::sleep(Duration::from_secs(frame_interval_sec.max(1)));
             if stop_signal.load(Ordering::Relaxed) {
                 break;
             }
@@ -163,6 +176,25 @@ fn spawn_frame_sampler(dir: PathBuf, stop_signal: Arc<AtomicBool>, initial_hash:
             frame_index += 1;
         }
     })
+}
+
+fn write_capture_meta(capture_dir: &PathBuf, frame_interval_sec: u64) {
+    let meta = CaptureMeta {
+        frame_interval_sec: frame_interval_sec.max(1),
+    };
+    if let Ok(raw) = serde_json::to_string_pretty(&meta) {
+        let _ = fs::write(capture_dir.join("capture_meta.json"), raw);
+    }
+}
+
+fn read_capture_interval(capture_dir: &PathBuf) -> u64 {
+    let meta_path = capture_dir.join("capture_meta.json");
+    if let Ok(raw) = fs::read_to_string(meta_path) {
+        if let Ok(meta) = serde_json::from_str::<CaptureMeta>(&raw) {
+            return meta.frame_interval_sec.max(1);
+        }
+    }
+    2
 }
 
 fn ffmpeg_is_available() -> bool {
@@ -301,6 +333,47 @@ fn to_displayable_image_src(path: &PathBuf) -> String {
     format!("data:image/png;base64,{encoded}")
 }
 
+fn split_transcript_into_chunks(transcript: &str, chunk_count: usize) -> Vec<String> {
+    if chunk_count == 0 {
+        return vec![];
+    }
+
+    let cleaned = transcript.trim();
+    if cleaned.is_empty() {
+        return vec!["".to_string(); chunk_count];
+    }
+
+    let mut sentences: Vec<String> = cleaned
+        .split(|c| c == '.' || c == '!' || c == '?' || c == '。' || c == '！' || c == '？' || c == '\n')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+
+    if sentences.is_empty() {
+        sentences.push(cleaned.to_string());
+    }
+
+    let mut chunks = vec![String::new(); chunk_count];
+    if sentences.len() <= chunk_count {
+        for (i, sentence) in sentences.into_iter().enumerate() {
+            chunks[i] = sentence;
+        }
+        return chunks;
+    }
+
+    let per_chunk = ((sentences.len() as f64) / (chunk_count as f64)).ceil() as usize;
+    for i in 0..chunk_count {
+        let start = i * per_chunk;
+        if start >= sentences.len() {
+            break;
+        }
+        let end = ((i + 1) * per_chunk).min(sentences.len());
+        chunks[i] = sentences[start..end].join(" ");
+    }
+    chunks
+}
+
 fn build_timeline_from_dir(capture_dir: &PathBuf) -> Vec<Value> {
     let transcript_path = capture_dir.join("transcript.txt");
     let transcript = fs::read_to_string(&transcript_path)
@@ -341,20 +414,35 @@ fn build_timeline_from_dir(capture_dir: &PathBuf) -> Vec<Value> {
     }
 
     items.sort_by(|a, b| a.0.cmp(&b.0));
+    let frame_interval_sec = read_capture_interval(capture_dir);
+    let transcript_chunks = split_transcript_into_chunks(&transcript, items.len());
 
     items
         .iter()
         .enumerate()
         .map(|(index, (_, path))| {
+            let chunk = transcript_chunks
+                .get(index)
+                .map(|v| v.trim().to_string())
+                .unwrap_or_default();
+            let summary = if chunk.is_empty() {
+                "No transcript mapped to this frame.".to_string()
+            } else {
+                let mut s: String = chunk.chars().take(120).collect();
+                if chunk.chars().count() > 120 {
+                    s.push_str("...");
+                }
+                s
+            };
             json!({
               "id": format!("tl-rs-live-{index:03}"),
-              "timestamp": (index as i64) * 2,
+              "timestamp": (index as i64) * (frame_interval_sec as i64),
               "pptScreenshotPath": to_displayable_image_src(path),
-              "originalTranscript": transcript.clone(),
-              "summary": "Frame is included only when it differs from the previous sampled frame (2s sampling, deduplicated).",
+              "originalTranscript": chunk,
+              "summary": summary,
               "annotations": [
                 { "term": "Frame Deduplication", "definition": "If current frame hash equals previous frame hash, the frame is ignored." },
-                { "term": "Sampling Interval", "definition": "Screenshots are sampled every 2 seconds while capture is running." }
+                { "term": "Sampling Interval", "definition": format!("Screenshots are sampled every {} seconds while capture is running.", frame_interval_sec) }
               ]
             })
         })
@@ -528,6 +616,44 @@ fn extract_json_block(content: &str) -> String {
     trimmed.to_string()
 }
 
+fn collect_analysis_images(capture_dir: &PathBuf, max_images: usize) -> Vec<String> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    let start = capture_dir.join("screen-start.png");
+    if start.exists() {
+        candidates.push(start);
+    }
+    if let Ok(entries) = fs::read_dir(capture_dir) {
+        let mut frame_paths: Vec<PathBuf> = entries
+            .filter_map(|entry| entry.ok().map(|value| value.path()))
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| name.starts_with("frame-") && name.ends_with(".png"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        frame_paths.sort();
+        candidates.extend(frame_paths);
+    }
+    let stop = capture_dir.join("screen-stop.png");
+    if stop.exists() {
+        candidates.push(stop);
+    }
+
+    if candidates.is_empty() || max_images == 0 {
+        return vec![];
+    }
+
+    let step = ((candidates.len() as f64) / (max_images as f64)).ceil() as usize;
+    let step = step.max(1);
+    candidates
+        .into_iter()
+        .step_by(step)
+        .take(max_images)
+        .map(|path| to_displayable_image_src(&path))
+        .collect()
+}
+
 struct AnalysisOutput {
     summary: String,
     tags: Vec<String>,
@@ -542,9 +668,10 @@ fn call_openrouter_analysis_once(
     openrouter_api_key: &str,
     openrouter_model: &str,
     transcript: &str,
+    image_data_urls: &[String],
 ) -> Result<AnalysisOutput, String> {
     let prompt = format!(
-        "You are an ML/AI research assistant. Analyze the following meeting/lecture transcript \
+        "You are an ML/AI research assistant. Analyze the following meeting/lecture transcript and screenshots \
 and output STRICT JSON with this exact shape:\n\
 {{\n\
   \"summary\": \"<concise summary, max 200 words>\",\n\
@@ -578,19 +705,42 @@ Constraints:\n\
 Prioritize seminal papers, recent survey papers, and authoritative blog posts. \
 Use real arxiv/doi/blog URLs when possible. If you are unsure of the exact URL, provide the best known citation info and leave url as an empty string.\n\
 \n\
+Important:\n\
+- Use BOTH transcript and screenshots to infer slide topics, method flow, equations/charts, and key claims.\n\
+- If screenshot evidence conflicts with transcript, explain in summary conservatively.\n\
+\n\
 Transcript:\n{}",
         transcript
     );
+
+    let mut user_content: Vec<Value> = vec![json!({
+        "type": "text",
+        "text": prompt
+    })];
+    for data_url in image_data_urls {
+        user_content.push(json!({
+            "type": "image_url",
+            "image_url": { "url": data_url }
+        }));
+    }
 
     let payload = json!({
       "model": openrouter_model,
       "messages": [
         { "role": "system", "content": "Return only valid JSON. No markdown fences." },
-        { "role": "user", "content": prompt }
+        { "role": "user", "content": user_content }
       ],
       "temperature": 0.2
     })
     .to_string();
+
+    let tmp_dir = env::temp_dir();
+    let payload_path = tmp_dir.join(format!(
+        "scholarclaw-openrouter-{}.json",
+        current_unix_timestamp().unwrap_or(0)
+    ));
+    fs::write(&payload_path, payload.as_bytes())
+        .map_err(|e| format!("failed to write temp payload file: {e}"))?;
 
     let output = Command::new("curl")
         .arg("-sS")
@@ -602,9 +752,11 @@ Transcript:\n{}",
         .arg("-H")
         .arg(format!("Authorization: Bearer {}", openrouter_api_key))
         .arg("-d")
-        .arg(payload)
+        .arg(format!("@{}", payload_path.to_string_lossy()))
         .output()
         .map_err(|error| format!("failed to call OpenRouter: {error}"))?;
+
+    let _ = fs::remove_file(&payload_path);
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -689,6 +841,7 @@ fn call_openrouter_analysis(
     openrouter_api_key: &str,
     openrouter_model: &str,
     transcript: &str,
+    image_data_urls: &[String],
 ) -> Result<(AnalysisOutput, String), String> {
     let preferred_model = openrouter_model.trim();
     let mut candidates: Vec<String> = vec![preferred_model.to_string()];
@@ -705,11 +858,23 @@ fn call_openrouter_analysis(
 
     let mut last_error = String::new();
     for candidate in &candidates {
-        match call_openrouter_analysis_once(openrouter_api_key, candidate, transcript) {
+        match call_openrouter_analysis_once(openrouter_api_key, candidate, transcript, image_data_urls) {
             Ok(output) => return Ok((output, candidate.clone())),
             Err(error) => {
+                // Retry once without images if model rejects multimodal payload.
+                let lower_error = error.to_lowercase();
+                if !image_data_urls.is_empty()
+                    && (lower_error.contains("image")
+                        || lower_error.contains("multimodal")
+                        || lower_error.contains("content type")
+                        || lower_error.contains("unsupported"))
+                {
+                    if let Ok(output) = call_openrouter_analysis_once(openrouter_api_key, candidate, transcript, &[]) {
+                        return Ok((output, candidate.clone()));
+                    }
+                }
                 last_error = format!("model `{candidate}` failed: {error}");
-                let lower = error.to_lowercase();
+                let lower = lower_error;
                 let should_try_next = lower.contains("not available in your region")
                     || lower.contains("no endpoints found")
                     || lower.contains("model not found");
@@ -867,7 +1032,7 @@ fn check_capture_prerequisites() -> CapturePrerequisites {
     } else {
         notes.push("ffmpeg detected: audio capture can be attempted on default input".to_string());
     }
-    notes.push("Frame sampler runs every 2s with content deduplication".to_string());
+    notes.push("Frame sampler interval is configurable (e.g. 2s / 5s / 10s) with content deduplication".to_string());
     notes.push("macOS may prompt for Screen Recording and Microphone permissions".to_string());
 
     CapturePrerequisites {
@@ -974,8 +1139,15 @@ fn start_capture_session(
         .as_ref()
         .and_then(|value| value.channels)
         .unwrap_or(1);
+    let resolved_frame_interval = options
+        .as_ref()
+        .and_then(|value| value.frame_interval_sec)
+        .unwrap_or(2)
+        .max(1)
+        .min(60);
 
     capture_screenshot(&screenshot_path, region.as_ref())?;
+    write_capture_meta(&capture_dir, resolved_frame_interval);
     let initial_hash = hash_file(&screenshot_path)?;
     let audio_process = spawn_audio_capture(
         &audio_path,
@@ -990,6 +1162,7 @@ fn start_capture_session(
         Arc::clone(&stop_signal),
         initial_hash,
         region.clone(),
+        resolved_frame_interval,
     );
 
     println!("start_capture_session invoked: {}", session_id);
@@ -1162,10 +1335,12 @@ fn generate_session_analysis(
     let transcript = fs::read_to_string(&transcript_path)
         .map_err(|_| "transcript.txt not found. Run Transcribe first.".to_string())?;
 
+    let image_data_urls = collect_analysis_images(&capture_dir, 6);
     let (output, used_model) = call_openrouter_analysis(
         open_router_api_key.trim(),
         open_router_model.trim(),
         transcript.trim(),
+        &image_data_urls,
     )?;
 
     let write = |name: &str, data: &str| -> Result<(), String> {
@@ -1255,7 +1430,7 @@ fn get_session_data(id: String) -> String {
               "originalTranscript": "No sampled frame found yet.",
               "summary": "Start capture and wait a few seconds for sampled frames.",
               "annotations": [
-                { "term": "Capture Warmup", "definition": "The sampler writes frames every 2 seconds when content changes." }
+                { "term": "Capture Warmup", "definition": "The sampler writes frames by configured interval when content changes." }
               ]
             })]
         } else {
@@ -1319,7 +1494,7 @@ fn get_session_data(id: String) -> String {
 
     json!({
       "id": id,
-      "title": "ScholarClaw Local Capture Session",
+      "title": "Local Capture Session",
       "date": "2026-03-17T00:00:00Z",
       "tags": tags,
       "concepts": concepts,

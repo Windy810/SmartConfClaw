@@ -19,6 +19,7 @@ export interface CaptureStartOptions {
   audioInputSpecs: string[];
   sampleRate: number;
   channels: number;
+  frameIntervalSec: number;
 }
 
 export interface CaptureRegion {
