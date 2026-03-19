@@ -512,15 +512,49 @@ fn extract_json_block(content: &str) -> String {
     trimmed.to_string()
 }
 
+struct AnalysisOutput {
+    summary: String,
+    tags: Vec<String>,
+    concepts: Vec<Value>,
+    qa: Vec<Value>,
+    graph_nodes: Vec<Value>,
+    graph_edges: Vec<Value>,
+}
+
 fn call_openrouter_analysis_once(
     openrouter_api_key: &str,
     openrouter_model: &str,
     transcript: &str,
-) -> Result<(String, Vec<Value>), String> {
+) -> Result<AnalysisOutput, String> {
     let prompt = format!(
-        "You are an ML research assistant. Based on the transcript, output STRICT JSON with shape: \
-{{\"summary\":\"...\", \"qa\":[{{\"question\":\"...\", \"suggestedAnswerPoints\":[\"...\",\"...\"]}}]}}. \
-Constraints: summary in <= 180 words, qa length 3 to 5, each answer points length 3 to 4. \
+        "You are an ML/AI research assistant. Analyze the following meeting/lecture transcript \
+and output STRICT JSON with this exact shape:\n\
+{{\n\
+  \"summary\": \"<concise summary, max 200 words>\",\n\
+  \"tags\": [\"<topic tag>\", ...],\n\
+  \"concepts\": [\n\
+    {{\"term\": \"<technical term>\", \"definition\": \"<1-2 sentence explanation>\"}}\n\
+  ],\n\
+  \"qa\": [\n\
+    {{\"question\": \"<interview/defense question>\", \"suggestedAnswerPoints\": [\"<point>\", ...]}}\n\
+  ],\n\
+  \"graphNodes\": [\n\
+    {{\"id\": \"<lowercase_snake_case>\", \"label\": \"<Display Name>\", \"group\": \"<method|dataset|metric|author|concept>\"}}\n\
+  ],\n\
+  \"graphEdges\": [\n\
+    {{\"source\": \"<node_id>\", \"target\": \"<node_id>\", \"relation\": \"<short relationship label>\"}}\n\
+  ]\n\
+}}\n\
+\n\
+Constraints:\n\
+- tags: 3-8 relevant topic tags\n\
+- concepts: 3-10 key technical concepts with clear definitions\n\
+- qa: 3-5 PhD interview/defense questions, each with 3-4 answer points\n\
+- graphNodes: 5-15 nodes (methods, datasets, metrics, authors, concepts)\n\
+- graphEdges: 5-20 edges connecting nodes by their relationships\n\
+- All node ids must be lowercase_snake_case and unique\n\
+- All edge source/target must reference valid node ids\n\
+\n\
 Transcript:\n{}",
         transcript
     );
@@ -582,27 +616,54 @@ Transcript:\n{}",
     let summary = parsed
         .get("summary")
         .and_then(Value::as_str)
-        .ok_or_else(|| "model output missing summary".to_string())?
+        .unwrap_or("")
         .to_string();
+
+    let tags: Vec<String> = parsed
+        .get("tags")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(Value::as_str).map(String::from).collect())
+        .unwrap_or_default();
+
+    let concepts = parsed
+        .get("concepts")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
 
     let qa = parsed
         .get("qa")
         .and_then(Value::as_array)
-        .ok_or_else(|| "model output missing qa array".to_string())?
-        .clone();
+        .cloned()
+        .unwrap_or_default();
 
-    Ok((summary, qa))
+    let graph_nodes = parsed
+        .get("graphNodes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let graph_edges = parsed
+        .get("graphEdges")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    if summary.is_empty() && qa.is_empty() {
+        return Err("model output missing both summary and qa".to_string());
+    }
+
+    Ok(AnalysisOutput { summary, tags, concepts, qa, graph_nodes, graph_edges })
 }
 
 fn call_openrouter_analysis(
     openrouter_api_key: &str,
     openrouter_model: &str,
     transcript: &str,
-) -> Result<(String, Vec<Value>, String), String> {
+) -> Result<(AnalysisOutput, String), String> {
     let preferred_model = openrouter_model.trim();
     let mut candidates: Vec<String> = vec![preferred_model.to_string()];
 
-    // Fallback chain for region/model availability issues.
     for fallback in [
         "openai/gpt-4o-mini",
         "google/gemini-2.0-flash-001",
@@ -616,16 +677,14 @@ fn call_openrouter_analysis(
     let mut last_error = String::new();
     for candidate in &candidates {
         match call_openrouter_analysis_once(openrouter_api_key, candidate, transcript) {
-            Ok((summary, qa)) => return Ok((summary, qa, candidate.clone())),
+            Ok(output) => return Ok((output, candidate.clone())),
             Err(error) => {
                 last_error = format!("model `{candidate}` failed: {error}");
-                // Availability errors should try fallbacks.
                 let lower = error.to_lowercase();
                 let should_try_next = lower.contains("not available in your region")
                     || lower.contains("no endpoints found")
                     || lower.contains("model not found");
                 if !should_try_next {
-                    // Keep behavior deterministic for non-availability errors.
                     return Err(last_error);
                 }
             }
@@ -635,6 +694,140 @@ fn call_openrouter_analysis(
     Err(format!(
         "all candidate models failed. Last error: {last_error}. Please change model in Settings."
     ))
+}
+
+fn knowledge_base_dir() -> Result<PathBuf, String> {
+    let home = env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
+    let dir = PathBuf::from(home)
+        .join("Library")
+        .join("Application Support")
+        .join("ScholarClaw")
+        .join("knowledge");
+    fs::create_dir_all(&dir)
+        .map_err(|e| format!("failed to create knowledge dir: {e}"))?;
+    Ok(dir)
+}
+
+fn merge_session_into_knowledge_base(
+    session_id: &str,
+    tags: &[String],
+    summary: &str,
+    graph_nodes: &[Value],
+    graph_edges: &[Value],
+) -> Result<(), String> {
+    let kb_dir = knowledge_base_dir()?;
+
+    let index_path = kb_dir.join("sessions_index.json");
+    let mut sessions: Vec<Value> = if index_path.exists() {
+        let raw = fs::read_to_string(&index_path).unwrap_or_else(|_| "[]".to_string());
+        serde_json::from_str(&raw).unwrap_or_default()
+    } else {
+        vec![]
+    };
+    sessions.retain(|s| s.get("id").and_then(Value::as_str) != Some(session_id));
+    sessions.push(json!({
+        "id": session_id,
+        "tags": tags,
+        "summary": summary,
+        "updatedAt": current_unix_timestamp().unwrap_or(0)
+    }));
+    fs::write(
+        &index_path,
+        serde_json::to_string_pretty(&sessions).unwrap_or_else(|_| "[]".to_string()),
+    )
+    .map_err(|e| format!("failed to write sessions_index.json: {e}"))?;
+
+    let graph_path = kb_dir.join("global_graph.json");
+    let mut global: Value = if graph_path.exists() {
+        let raw = fs::read_to_string(&graph_path).unwrap_or_else(|_| "{}".to_string());
+        serde_json::from_str(&raw)
+            .unwrap_or_else(|_| json!({"nodes": [], "edges": []}))
+    } else {
+        json!({"nodes": [], "edges": []})
+    };
+
+    if let Some(existing_nodes) = global.get_mut("nodes").and_then(Value::as_array_mut) {
+        for node in graph_nodes {
+            let node_id = node.get("id").and_then(Value::as_str).unwrap_or("");
+            if node_id.is_empty() {
+                continue;
+            }
+            let found = existing_nodes
+                .iter_mut()
+                .find(|n| n.get("id").and_then(Value::as_str) == Some(node_id));
+            match found {
+                Some(existing) => {
+                    if let Some(obj) = existing.as_object_mut() {
+                        let arr = obj
+                            .entry("sessions")
+                            .or_insert_with(|| json!([]));
+                        if let Some(sessions) = arr.as_array_mut() {
+                            if !sessions.iter().any(|s| s.as_str() == Some(session_id)) {
+                                sessions.push(json!(session_id));
+                            }
+                        }
+                    }
+                }
+                None => {
+                    let mut new_node = node.clone();
+                    if let Some(obj) = new_node.as_object_mut() {
+                        obj.insert("sessions".to_string(), json!([session_id]));
+                    }
+                    existing_nodes.push(new_node);
+                }
+            }
+        }
+    }
+
+    if let Some(existing_edges) = global.get_mut("edges").and_then(Value::as_array_mut) {
+        for edge in graph_edges {
+            let source = edge.get("source").and_then(Value::as_str).unwrap_or("");
+            let target = edge.get("target").and_then(Value::as_str).unwrap_or("");
+            if source.is_empty() || target.is_empty() {
+                continue;
+            }
+            let found = existing_edges.iter_mut().find(|e| {
+                e.get("source").and_then(Value::as_str) == Some(source)
+                    && e.get("target").and_then(Value::as_str) == Some(target)
+            });
+            match found {
+                Some(existing) => {
+                    if let Some(obj) = existing.as_object_mut() {
+                        let w = obj
+                            .get("weight")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(1)
+                            + 1;
+                        obj.insert("weight".to_string(), json!(w));
+                        let arr = obj
+                            .entry("sessions")
+                            .or_insert_with(|| json!([]));
+                        if let Some(sessions) = arr.as_array_mut() {
+                            if !sessions.iter().any(|s| s.as_str() == Some(session_id)) {
+                                sessions.push(json!(session_id));
+                            }
+                        }
+                    }
+                }
+                None => {
+                    let mut new_edge = edge.clone();
+                    if let Some(obj) = new_edge.as_object_mut() {
+                        obj.insert("weight".to_string(), json!(1));
+                        obj.insert("sessions".to_string(), json!([session_id]));
+                    }
+                    existing_edges.push(new_edge);
+                }
+            }
+        }
+    }
+
+    fs::write(
+        &graph_path,
+        serde_json::to_string_pretty(&global).unwrap_or_else(|_| "{}".to_string()),
+    )
+    .map_err(|e| format!("failed to write global_graph.json: {e}"))?;
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -930,7 +1123,6 @@ fn generate_session_analysis(
     if open_router_api_key.trim().is_empty() {
         return Err("OpenRouter API key is empty".to_string());
     }
-
     if open_router_model.trim().is_empty() {
         return Err("OpenRouter model is empty".to_string());
     }
@@ -941,24 +1133,57 @@ fn generate_session_analysis(
     let transcript = fs::read_to_string(&transcript_path)
         .map_err(|_| "transcript.txt not found. Run Transcribe first.".to_string())?;
 
-    let (summary, qa, used_model) = call_openrouter_analysis(
+    let (output, used_model) = call_openrouter_analysis(
         open_router_api_key.trim(),
         open_router_model.trim(),
         transcript.trim(),
     )?;
 
-    let summary_path = capture_dir.join("summary.txt");
-    let qa_path = capture_dir.join("qa.json");
-    fs::write(&summary_path, summary.as_bytes())
-        .map_err(|error| format!("failed to write summary.txt: {error}"))?;
-    fs::write(&qa_path, serde_json::to_string_pretty(&qa).unwrap_or_else(|_| "[]".to_string()).as_bytes())
-        .map_err(|error| format!("failed to write qa.json: {error}"))?;
+    let write = |name: &str, data: &str| -> Result<(), String> {
+        fs::write(capture_dir.join(name), data.as_bytes())
+            .map_err(|e| format!("failed to write {name}: {e}"))
+    };
 
-    Ok(format!(
-        "{} (model={})",
-        summary_path.to_string_lossy(),
-        used_model
-    ))
+    write("summary.txt", &output.summary)?;
+    write(
+        "qa.json",
+        &serde_json::to_string_pretty(&output.qa).unwrap_or_else(|_| "[]".to_string()),
+    )?;
+    write(
+        "tags.json",
+        &serde_json::to_string_pretty(&output.tags).unwrap_or_else(|_| "[]".to_string()),
+    )?;
+    write(
+        "concepts.json",
+        &serde_json::to_string_pretty(&output.concepts).unwrap_or_else(|_| "[]".to_string()),
+    )?;
+    write(
+        "session_graph.json",
+        &serde_json::to_string_pretty(&json!({
+            "nodes": output.graph_nodes,
+            "edges": output.graph_edges
+        }))
+        .unwrap_or_else(|_| "{}".to_string()),
+    )?;
+
+    if let Err(e) = merge_session_into_knowledge_base(
+        &id,
+        &output.tags,
+        &output.summary,
+        &output.graph_nodes,
+        &output.graph_edges,
+    ) {
+        println!("Warning: knowledge base merge failed: {e}");
+    }
+
+    let stats = format!(
+        "tags={} concepts={} nodes={} edges={}",
+        output.tags.len(),
+        output.concepts.len(),
+        output.graph_nodes.len(),
+        output.graph_edges.len()
+    );
+    Ok(format!("Analysis complete (model={used_model}, {stats})"))
 }
 
 #[tauri::command]
@@ -1024,29 +1249,35 @@ fn get_session_data(id: String) -> String {
     };
 
     let mut extended_report = report_note.clone();
-    let mut qa_simulator = vec![json!({
-      "question": "What is implemented in this capture milestone?",
-      "suggestedAnswerPoints": [
-        "Session lifecycle in Rust command handlers.",
-        "Filesystem output for capture artifacts.",
-        "Best-effort audio recording with ffmpeg when available.",
-        "2-second screenshot sampler with deduplication against previous frame."
-      ]
-    })];
+    let mut qa_simulator: Vec<Value> = vec![];
+    let mut tags: Vec<Value> = vec![json!(format!("status:{capture_status}"))];
+    let mut concepts: Vec<Value> = vec![];
 
     if let Some(dir) = capture_dir.as_ref() {
-        let summary_path = dir.join("summary.txt");
-        if let Ok(summary) = fs::read_to_string(&summary_path) {
+        if let Ok(summary) = fs::read_to_string(dir.join("summary.txt")) {
             if !summary.trim().is_empty() {
                 extended_report = summary;
             }
         }
-
-        let qa_path = dir.join("qa.json");
-        if let Ok(raw_qa) = fs::read_to_string(&qa_path) {
-            if let Ok(parsed) = serde_json::from_str::<Value>(&raw_qa) {
+        if let Ok(raw) = fs::read_to_string(dir.join("qa.json")) {
+            if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
                 if let Some(arr) = parsed.as_array() {
                     qa_simulator = arr.clone();
+                }
+            }
+        }
+        if let Ok(raw) = fs::read_to_string(dir.join("tags.json")) {
+            if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
+                if let Some(arr) = parsed.as_array() {
+                    tags = arr.clone();
+                    tags.push(json!(format!("status:{capture_status}")));
+                }
+            }
+        }
+        if let Ok(raw) = fs::read_to_string(dir.join("concepts.json")) {
+            if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
+                if let Some(arr) = parsed.as_array() {
+                    concepts = arr.clone();
                 }
             }
         }
@@ -1056,12 +1287,37 @@ fn get_session_data(id: String) -> String {
       "id": id,
       "title": "ScholarClaw Local Capture Session",
       "date": "2026-03-17T00:00:00Z",
-      "tags": ["Local Capture", "Rust IPC", "Prototype", format!("status:{capture_status}")],
+      "tags": tags,
+      "concepts": concepts,
       "timeline": timeline,
       "extendedReport": extended_report,
       "qaSimulator": qa_simulator
     })
     .to_string()
+}
+
+#[tauri::command]
+fn get_knowledge_graph() -> String {
+    let graph_path = match knowledge_base_dir() {
+        Ok(dir) => dir.join("global_graph.json"),
+        Err(_) => return json!({"nodes": [], "edges": []}).to_string(),
+    };
+    if !graph_path.exists() {
+        return json!({"nodes": [], "edges": []}).to_string();
+    }
+    fs::read_to_string(&graph_path).unwrap_or_else(|_| json!({"nodes": [], "edges": []}).to_string())
+}
+
+#[tauri::command]
+fn get_all_sessions() -> String {
+    let index_path = match knowledge_base_dir() {
+        Ok(dir) => dir.join("sessions_index.json"),
+        Err(_) => return "[]".to_string(),
+    };
+    if !index_path.exists() {
+        return "[]".to_string();
+    }
+    fs::read_to_string(&index_path).unwrap_or_else(|_| "[]".to_string())
 }
 
 fn main() {
@@ -1077,7 +1333,9 @@ fn main() {
             stop_capture_session,
             transcribe_session_audio,
             generate_session_analysis,
-            get_session_data
+            get_session_data,
+            get_knowledge_graph,
+            get_all_sessions
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

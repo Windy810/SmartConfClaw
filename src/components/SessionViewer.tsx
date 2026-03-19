@@ -5,7 +5,6 @@ import type { AcademicSession, TimelineItem } from "../types";
 import { Badge } from "./ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { ScrollArea } from "./ui/scroll-area";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 
 interface SessionViewerProps {
   session: AcademicSession;
@@ -104,41 +103,26 @@ export function SessionViewer({ session }: SessionViewerProps): JSX.Element {
         <CardContent className="space-y-5 p-4">
           <div className="rounded-xl border border-zinc-200/80 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
             <h3 className="mb-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">Summary</h3>
-            <p className="text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">{activeItem.summary}</p>
+            <p className="text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">
+              {session.extendedReport || activeItem.summary}
+            </p>
           </div>
 
-          <div className="rounded-xl border border-zinc-200/80 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-            <h3 className="mb-3 text-sm font-semibold text-zinc-800 dark:text-zinc-100">Concept Annotations</h3>
-            <TooltipProvider>
-              <div className="flex flex-wrap gap-2">
-                {activeItem.annotations.map((annotation) => (
-                  <Tooltip key={annotation.term}>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
-                      >
-                        {annotation.term}
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent className="space-y-1">
-                      <p className="text-xs leading-relaxed">{annotation.definition}</p>
-                      {annotation.sourceUrl ? (
-                        <a
-                          href={annotation.sourceUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-block text-[11px] text-zinc-500 underline underline-offset-2 dark:text-zinc-400"
-                        >
-                          Source
-                        </a>
-                      ) : null}
-                    </TooltipContent>
-                  </Tooltip>
+          {session.concepts && session.concepts.length > 0 ? (
+            <div className="rounded-xl border border-zinc-200/80 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+              <h3 className="mb-3 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+                Key Concepts ({session.concepts.length})
+              </h3>
+              <div className="space-y-3">
+                {session.concepts.map((concept) => (
+                  <div key={concept.term} className="rounded-lg border border-zinc-100 bg-zinc-50/60 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900/50">
+                    <p className="text-xs font-semibold text-zinc-800 dark:text-zinc-100">{concept.term}</p>
+                    <p className="mt-0.5 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">{concept.definition}</p>
+                  </div>
                 ))}
               </div>
-            </TooltipProvider>
-          </div>
+            </div>
+          ) : null}
 
           <div className="rounded-xl border border-zinc-200/80 bg-zinc-50/60 p-4 dark:border-zinc-800 dark:bg-zinc-900/50">
             <h3 className="mb-2 text-sm font-semibold text-zinc-800 dark:text-zinc-200">Extended Report</h3>

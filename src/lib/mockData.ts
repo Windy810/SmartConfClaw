@@ -5,6 +5,11 @@ export const mockAcademicSession: AcademicSession = {
   title: "NeurIPS 2025 | Parameter-Efficient Fine-Tuning for Sparse MoE Transformers",
   date: "2025-12-11T09:30:00Z",
   tags: ["NeurIPS", "PEFT", "MoE", "LLM Optimization", "Efficient Training"],
+  concepts: [
+    { term: "LoRA", definition: "Low-Rank Adaptation: a parameter-efficient fine-tuning method that adds low-rank matrices to frozen pretrained weights." },
+    { term: "Mixture of Experts (MoE)", definition: "An architecture that uses a gating network to route inputs to a sparse subset of expert sub-networks." },
+    { term: "Router Collapse", definition: "A failure mode where the MoE gating mechanism routes all tokens to a small subset of experts, leaving others unused." },
+  ],
   timeline: [
     {
       id: "tl-001",

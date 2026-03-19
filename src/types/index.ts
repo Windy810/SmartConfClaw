@@ -3,6 +3,7 @@ export interface AcademicSession {
   title: string;
   date: string;
   tags: string[];
+  concepts: ConceptAnnotation[];
   timeline: TimelineItem[];
   extendedReport: string;
   qaSimulator: QAMock[];
@@ -31,7 +32,13 @@ export interface QAMock {
 export interface GraphNode {
   id: string;
   label: string;
-  group: "method" | "dataset" | "metric" | "author";
+  group: "method" | "dataset" | "metric" | "author" | "concept";
+  sessions?: string[];
+}
+
+export interface KnowledgeGraph {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
 }
 
 export interface GraphEdge {

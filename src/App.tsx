@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import { currentWindowLabel } from "./lib/windowLabel";
-import { mockAcademicSession, mockGraphEdges, mockGraphNodes } from "./lib/mockData";
+import { mockAcademicSession } from "./lib/mockData";
 import {
   checkCapturePrerequisites,
   generateSessionAnalysis,
@@ -289,7 +289,7 @@ function MainApp(): JSX.Element {
                   <SessionViewer session={activeSession} />
                 </>
               ) : null}
-              {activeView === "graph" ? <GraphViewer nodes={mockGraphNodes} edges={mockGraphEdges} /> : null}
+              {activeView === "graph" ? <GraphViewer /> : null}
               {activeView === "qa" ? <QAPanel items={activeSession.qaSimulator} /> : null}
               {activeView === "settings" ? <SettingsPanel /> : null}
             </div>

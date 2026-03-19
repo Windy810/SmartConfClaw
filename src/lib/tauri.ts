@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import { mockAcademicSession } from "./mockData";
-import type { AcademicSession } from "../types";
+import type { AcademicSession, KnowledgeGraph } from "../types";
 
 export interface CapturePrerequisites {
   platform: string;
@@ -158,4 +158,25 @@ export async function generateSessionAnalysis(
     openRouterApiKey,
     openRouterModel,
   });
+}
+
+export async function getKnowledgeGraph(): Promise<KnowledgeGraph> {
+  if (!isTauriRuntime()) {
+    return { nodes: [], edges: [] };
+  }
+  const payload = await invoke<KnowledgeGraph | string>("get_knowledge_graph");
+  if (typeof payload === "string") {
+    return JSON.parse(payload) as KnowledgeGraph;
+  }
+  return payload;
+}
+
+export async function getAllSessions(): Promise<
+  Array<{ id: string; tags: string[]; summary: string; updatedAt: number }>
+> {
+  if (!isTauriRuntime()) {
+    return [];
+  }
+  const payload = await invoke<string>("get_all_sessions");
+  return JSON.parse(payload);
 }
