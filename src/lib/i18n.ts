@@ -28,6 +28,15 @@ const en = {
   "sessions.audio": "audio",
   "sessions.transcript": "transcript",
   "sessions.analyzed": "analyzed",
+  "sessions.delete": "Delete",
+  "sessions.deleteConfirm":
+    "Delete this session? This removes local capture files and its entries from the knowledge graph index.",
+  "sessions.confirmDeleteBtn": "Confirm",
+  "sessions.cancelDeleteBtn": "Cancel",
+  "sessions.deleteRunning": "Stop capture before deleting this session.",
+  "sessions.deleteNotFound":
+    "Session folder not found on disk. Check Screenshot Directory in Settings or whether files were moved.",
+  "sessions.deleteFailed": "Failed to delete session",
 
   // SessionViewer
   "viewer.noTimeline": "No timeline data",
@@ -119,6 +128,15 @@ const zh: Record<string, string> = {
   "sessions.audio": "音频",
   "sessions.transcript": "转写",
   "sessions.analyzed": "已分析",
+  "sessions.delete": "删除",
+  "sessions.deleteConfirm":
+    "确定删除该会话？将删除本地捕获目录，并从知识图谱索引中移除与该会话相关的节点/边。",
+  "sessions.confirmDeleteBtn": "确认删除",
+  "sessions.cancelDeleteBtn": "取消",
+  "sessions.deleteRunning": "请先停止捕获后再删除该会话。",
+  "sessions.deleteNotFound":
+    "未在磁盘上找到该会话文件夹。请检查设置中的截图目录，或确认会话数据是否已被移动。",
+  "sessions.deleteFailed": "删除会话失败",
 
   // SessionViewer
   "viewer.noTimeline": "暂无时间轴数据",

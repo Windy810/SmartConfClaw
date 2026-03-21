@@ -4,6 +4,7 @@ import "reactflow/dist/style.css";
 
 import { useT } from "../lib/i18n";
 import { getKnowledgeGraph } from "../lib/tauri";
+import { useUiStore } from "../store/uiStore";
 import type { GraphEdge, GraphNode } from "../types";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Badge } from "./ui/badge";
@@ -22,6 +23,7 @@ function nodeColor(group: string): string {
 
 export function GraphViewer(): JSX.Element {
   const t = useT();
+  const graphRefreshNonce = useUiStore((s) => s.graphRefreshNonce);
   const [nodes, setNodes] = useState<GraphNode[]>([]);
   const [edges, setEdges] = useState<GraphEdge[]>([]);
   const [loading, setLoading] = useState(true);
@@ -29,6 +31,7 @@ export function GraphViewer(): JSX.Element {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
+      setLoading(true);
       try {
         const graph = await getKnowledgeGraph();
         if (!cancelled) {
@@ -45,7 +48,7 @@ export function GraphViewer(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [graphRefreshNonce]);
 
   const flowNodes = useMemo<Node[]>(() => {
     const cols = Math.max(3, Math.ceil(Math.sqrt(nodes.length)));

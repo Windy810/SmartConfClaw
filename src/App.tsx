@@ -5,6 +5,7 @@ import { currentWindowLabel } from "./lib/windowLabel";
 import { mockAcademicSession } from "./lib/mockData";
 import {
   checkCapturePrerequisites,
+  deleteSession,
   generateSessionAnalysis,
   getSessionData,
   listCaptureSessions,
@@ -64,6 +65,7 @@ function MainApp(): JSX.Element {
   const t = useT();
   const activeView = useUiStore((state) => state.activeView);
   const setActiveView = useUiStore((state) => state.setActiveView);
+  const bumpGraphRefresh = useUiStore((state) => state.bumpGraphRefresh);
   const [isCapturing, setIsCapturing] = useState<boolean>(false);
   const [isBusy, setIsBusy] = useState<boolean>(false);
   const [activeSession, setActiveSession] = useState<AcademicSession>(mockAcademicSession);
@@ -71,10 +73,13 @@ function MainApp(): JSX.Element {
   const [captureMessage, setCaptureMessage] = useState<string>("Ready to capture");
   const [sessionList, setSessionList] = useState<CaptureSessionMeta[]>([]);
   const [showSessionPicker, setShowSessionPicker] = useState<boolean>(false);
+  /** In-app confirm (window.confirm is unreliable in Tauri WebView). */
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const audioInputSpecs = useSettingsStore((state) => state.audioInputSpecs);
   const audioSampleRate = useSettingsStore((state) => state.audioSampleRate);
   const audioChannels = useSettingsStore((state) => state.audioChannels);
   const frameIntervalSec = useSettingsStore((state) => state.frameIntervalSec);
+  const screenshotDirectory = useSettingsStore((state) => state.screenshotDirectory);
   const asrProvider = useSettingsStore((state) => state.asrProvider);
   const asrEndpoint = useSettingsStore((state) => state.asrEndpoint);
   const asrApiKey = useSettingsStore((state) => state.asrApiKey);
@@ -268,9 +273,49 @@ function MainApp(): JSX.Element {
     }
   };
 
+  const requestDeleteSession = (sessionId: string): void => {
+    if (sessionList.find((s) => s.id === sessionId)?.isRunning) {
+      setCaptureMessage(t("sessions.deleteRunning"));
+      return;
+    }
+    setPendingDeleteId(sessionId);
+    setCaptureMessage(t("sessions.deleteConfirm"));
+  };
+
+  const cancelPendingDelete = (): void => {
+    setPendingDeleteId(null);
+  };
+
+  const executeDeleteSession = async (sessionId: string): Promise<void> => {
+    setPendingDeleteId(null);
+    setIsBusy(true);
+    try {
+      const msg = await deleteSession(sessionId, {
+        screenshotsRoot: screenshotDirectory,
+      });
+      setCaptureMessage(msg);
+      await refreshSessionList();
+      bumpGraphRefresh();
+      if (currentSessionId === sessionId) {
+        setCurrentSessionId(mockAcademicSession.id);
+        setActiveSession(mockAcademicSession);
+      }
+    } catch (error) {
+      const errText = extractErrorMessage(error);
+      if (errText.includes("SESSION_FOLDER_NOT_FOUND")) {
+        setCaptureMessage(`${t("sessions.deleteNotFound")} ${errText}`);
+      } else {
+        setCaptureMessage(`${t("sessions.deleteFailed")}: ${errText}`);
+      }
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   const toggleSessionPicker = (): void => {
     const next = !showSessionPicker;
     setShowSessionPicker(next);
+    setPendingDeleteId(null);
     if (next) {
       void refreshSessionList();
     }
@@ -374,18 +419,20 @@ function MainApp(): JSX.Element {
                               {sessionList.map((s) => {
                                 const selected = s.id === currentSessionId;
                                 return (
-                                  <button
+                                  <div
                                     key={s.id}
-                                    type="button"
-                                    disabled={isBusy}
-                                    onClick={() => void handleSelectSession(s.id)}
-                                    className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left transition-colors ${
+                                    className={`flex w-full items-stretch gap-2 rounded-lg px-2 py-1.5 transition-colors ${
                                       selected
                                         ? "bg-zinc-900 text-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
                                         : "bg-white hover:bg-zinc-100 dark:bg-zinc-800 dark:hover:bg-zinc-700"
                                     }`}
                                   >
-                                    <div className="flex min-w-0 flex-col gap-0.5">
+                                    <button
+                                      type="button"
+                                      disabled={isBusy}
+                                      onClick={() => void handleSelectSession(s.id)}
+                                      className="flex min-w-0 flex-1 flex-col items-start gap-0.5 rounded-md px-1 py-0.5 text-left"
+                                    >
                                       <span className="truncate text-xs font-medium">{s.id}</span>
                                       <div className="flex flex-wrap items-center gap-1">
                                         {s.isRunning ? (
@@ -415,21 +462,68 @@ function MainApp(): JSX.Element {
                                           <span className="text-[10px] text-violet-500">{t("sessions.analyzed")}</span>
                                         ) : null}
                                       </div>
-                                    </div>
-                                    {s.tags.length > 0 ? (
-                                      <div className="flex flex-wrap gap-1">
-                                        {s.tags.slice(0, 3).map((t: string, i: number) => (
-                                          <Badge
-                                            key={`${t}-${i}`}
-                                            variant="secondary"
-                                            className="h-4 max-w-[80px] truncate px-1.5 text-[10px] leading-none"
-                                          >
-                                            {String(t).replace(/^"|"$/g, "")}
-                                          </Badge>
-                                        ))}
+                                      {s.tags.length > 0 ? (
+                                        <div className="mt-0.5 flex flex-wrap gap-1">
+                                          {s.tags.slice(0, 3).map((tag: string, i: number) => (
+                                            <Badge
+                                              key={`${tag}-${i}`}
+                                              variant="secondary"
+                                              className="h-4 max-w-[80px] truncate px-1.5 text-[10px] leading-none"
+                                            >
+                                              {String(tag).replace(/^"|"$/g, "")}
+                                            </Badge>
+                                          ))}
+                                        </div>
+                                      ) : null}
+                                    </button>
+                                    {pendingDeleteId === s.id ? (
+                                      <div className="flex shrink-0 flex-col items-stretch gap-1 self-center">
+                                        <Button
+                                          type="button"
+                                          variant="default"
+                                          size="sm"
+                                          className="h-7 border border-red-600 bg-red-600 px-2 text-[10px] leading-tight text-white hover:bg-red-700 dark:border-red-500 dark:bg-red-600"
+                                          disabled={isBusy || s.isRunning}
+                                          onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            void executeDeleteSession(s.id);
+                                          }}
+                                        >
+                                          {t("sessions.confirmDeleteBtn")}
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          variant="outline"
+                                          size="sm"
+                                          className="h-7 px-2 text-[10px] leading-tight"
+                                          disabled={isBusy}
+                                          onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            cancelPendingDelete();
+                                          }}
+                                        >
+                                          {t("sessions.cancelDeleteBtn")}
+                                        </Button>
                                       </div>
-                                    ) : null}
-                                  </button>
+                                    ) : (
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-auto shrink-0 self-center px-2 text-xs text-red-600 hover:bg-red-500/10 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                                        disabled={isBusy || s.isRunning}
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          requestDeleteSession(s.id);
+                                        }}
+                                      >
+                                        {t("sessions.delete")}
+                                      </Button>
+                                    )}
+                                  </div>
                                 );
                               })}
                             </div>

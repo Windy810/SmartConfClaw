@@ -1,10 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -902,14 +903,70 @@ fn knowledge_base_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// Expand `~` to `$HOME` for paths from Settings (Screenshot Directory).
+fn expand_user_path(path_str: &str) -> PathBuf {
+    let trimmed = path_str.trim();
+    if trimmed.starts_with("~/") {
+        if let Ok(home) = env::var("HOME") {
+            return PathBuf::from(home).join(trimmed.trim_start_matches("~/"));
+        }
+    }
+    if trimmed == "~" {
+        if let Ok(home) = env::var("HOME") {
+            return PathBuf::from(home);
+        }
+    }
+    PathBuf::from(trimmed)
+}
+
+/// Persist absolute session folder path into `sessions_index.json` (called when capture stops and on AI merge).
+fn upsert_session_capture_dir_in_index(session_id: &str, capture_dir: &Path) -> Result<(), String> {
+    let kb_dir = knowledge_base_dir()?;
+    let index_path = kb_dir.join("sessions_index.json");
+    let mut sessions: Vec<Value> = if index_path.exists() {
+        let raw = fs::read_to_string(&index_path).unwrap_or_else(|_| "[]".to_string());
+        serde_json::from_str(&raw).unwrap_or_default()
+    } else {
+        vec![]
+    };
+    let abs = fs::canonicalize(capture_dir).unwrap_or_else(|_| capture_dir.to_path_buf());
+    let abs_str = abs.to_string_lossy().to_string();
+    let ts = current_unix_timestamp().unwrap_or(0);
+    if let Some(entry) = sessions
+        .iter_mut()
+        .find(|s| s.get("id").and_then(Value::as_str) == Some(session_id))
+    {
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("captureDir".to_string(), json!(abs_str));
+            obj.insert("updatedAt".to_string(), json!(ts));
+        }
+    } else {
+        sessions.push(json!({
+            "id": session_id,
+            "captureDir": abs_str,
+            "updatedAt": ts
+        }));
+    }
+    fs::write(
+        &index_path,
+        serde_json::to_string_pretty(&sessions).unwrap_or_else(|_| "[]".to_string()),
+    )
+    .map_err(|e| format!("failed to write sessions_index.json: {e}"))
+}
+
 fn merge_session_into_knowledge_base(
     session_id: &str,
     tags: &[String],
     summary: &str,
     graph_nodes: &[Value],
     graph_edges: &[Value],
+    capture_session_dir: &Path,
 ) -> Result<(), String> {
     let kb_dir = knowledge_base_dir()?;
+
+    let capture_dir_abs = fs::canonicalize(capture_session_dir)
+        .unwrap_or_else(|_| capture_session_dir.to_path_buf());
+    let capture_dir_str = capture_dir_abs.to_string_lossy().to_string();
 
     let index_path = kb_dir.join("sessions_index.json");
     let mut sessions: Vec<Value> = if index_path.exists() {
@@ -923,7 +980,8 @@ fn merge_session_into_knowledge_base(
         "id": session_id,
         "tags": tags,
         "summary": summary,
-        "updatedAt": current_unix_timestamp().unwrap_or(0)
+        "updatedAt": current_unix_timestamp().unwrap_or(0),
+        "captureDir": capture_dir_str
     }));
     fs::write(
         &index_path,
@@ -1022,6 +1080,203 @@ fn merge_session_into_knowledge_base(
     .map_err(|e| format!("failed to write global_graph.json: {e}"))?;
 
     Ok(())
+}
+
+/// Remove a session from `sessions_index.json` and strip its contributions from `global_graph.json`
+/// (nodes/edges with `sessions` arrays; orphan edges without `sessions` are dropped if endpoints vanish).
+fn remove_session_from_knowledge_base(session_id: &str) -> Result<(), String> {
+    let kb_dir = knowledge_base_dir()?;
+
+    let index_path = kb_dir.join("sessions_index.json");
+    if index_path.exists() {
+        let raw = fs::read_to_string(&index_path).unwrap_or_else(|_| "[]".to_string());
+        let mut sessions: Vec<Value> = serde_json::from_str(&raw).unwrap_or_default();
+        sessions.retain(|s| s.get("id").and_then(Value::as_str) != Some(session_id));
+        fs::write(
+            &index_path,
+            serde_json::to_string_pretty(&sessions).unwrap_or_else(|_| "[]".to_string()),
+        )
+        .map_err(|e| format!("failed to write sessions_index.json: {e}"))?;
+    }
+
+    let graph_path = kb_dir.join("global_graph.json");
+    if !graph_path.exists() {
+        return Ok(());
+    }
+
+    let raw = fs::read_to_string(&graph_path).unwrap_or_else(|_| "{}".to_string());
+    let mut global: Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|_| json!({"nodes": [], "edges": []}));
+
+    if let Some(nodes) = global.get_mut("nodes").and_then(Value::as_array_mut) {
+        for n in nodes.iter_mut() {
+            if let Some(arr) = n.get_mut("sessions").and_then(Value::as_array_mut) {
+                arr.retain(|s| s.as_str() != Some(session_id));
+            }
+        }
+        nodes.retain(|n| match n.get("sessions").and_then(Value::as_array) {
+            Some(arr) if arr.is_empty() => false,
+            _ => true,
+        });
+    }
+
+    let node_ids: HashSet<String> = global
+        .get("nodes")
+        .and_then(|v| v.as_array())
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|n| n.get("id").and_then(Value::as_str).map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if let Some(edges) = global.get_mut("edges").and_then(Value::as_array_mut) {
+        for e in edges.iter_mut() {
+            if let Some(arr) = e.get_mut("sessions").and_then(Value::as_array_mut) {
+                let before = arr.len();
+                arr.retain(|s| s.as_str() != Some(session_id));
+                let removed = before.saturating_sub(arr.len());
+                if removed > 0 {
+                    if let Some(obj) = e.as_object_mut() {
+                        if let Some(w) = obj.get("weight").and_then(Value::as_u64) {
+                            let nw = w.saturating_sub(removed as u64);
+                            obj.insert("weight".to_string(), json!(nw));
+                        }
+                    }
+                }
+            }
+        }
+        edges.retain(|e| {
+            if let Some(arr) = e.get("sessions").and_then(Value::as_array) {
+                if arr.is_empty() {
+                    return false;
+                }
+                if let Some(w) = e.get("weight").and_then(Value::as_u64) {
+                    if w == 0 {
+                        return false;
+                    }
+                }
+                true
+            } else {
+                let src = e.get("source").and_then(Value::as_str).unwrap_or("");
+                let tgt = e.get("target").and_then(Value::as_str).unwrap_or("");
+                !src.is_empty()
+                    && !tgt.is_empty()
+                    && node_ids.contains(src)
+                    && node_ids.contains(tgt)
+            }
+        });
+    }
+
+    fs::write(
+        &graph_path,
+        serde_json::to_string_pretty(&global).unwrap_or_else(|_| "{}".to_string()),
+    )
+    .map_err(|e| format!("failed to write global_graph.json: {e}"))?;
+
+    Ok(())
+}
+
+/// Resolve the on-disk session folder for deletion. Order:
+/// 1) `captureDir` from `sessions_index.json` (recorded at capture stop / AI merge)
+/// 2) Default `~/Library/Application Support/ScholarClaw/captures/<id>`
+/// 3) Settings "Screenshot Directory": `<expanded>/<id>` then `<expanded>/captures/<id>`
+fn find_session_folder_on_disk(
+    session_id: &str,
+    index_entry: Option<&Value>,
+    settings_screenshots_root: Option<&str>,
+) -> Result<PathBuf, String> {
+    let mut tried: Vec<String> = Vec::new();
+
+    if let Some(entry) = index_entry {
+        if let Some(s) = entry.get("captureDir").and_then(Value::as_str) {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                let p = PathBuf::from(trimmed);
+                tried.push(p.to_string_lossy().to_string());
+                if p.is_dir() {
+                    return Ok(p);
+                }
+            }
+        }
+    }
+
+    if let Some(root) = captures_root_dir() {
+        let p = root.join(session_id);
+        tried.push(p.to_string_lossy().to_string());
+        if p.is_dir() {
+            return Ok(p);
+        }
+    }
+
+    if let Some(raw) = settings_screenshots_root {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            let base = expand_user_path(trimmed);
+            let p1 = base.join(session_id);
+            tried.push(p1.to_string_lossy().to_string());
+            if p1.is_dir() {
+                return Ok(p1);
+            }
+            let p2 = base.join("captures").join(session_id);
+            tried.push(p2.to_string_lossy().to_string());
+            if p2.is_dir() {
+                return Ok(p2);
+            }
+        }
+    }
+
+    Err(format!(
+        "SESSION_FOLDER_NOT_FOUND: Could not find session folder on disk. Tried: {}. \
+         Check Settings → Screenshot Directory, or restore/move the folder, then try again.",
+        tried.join(" | ")
+    ))
+}
+
+#[tauri::command]
+fn delete_session(id: String, screenshots_root: Option<String>) -> Result<String, String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("Session id is empty.".to_string());
+    }
+    if is_capture_running(id) {
+        return Err("Cannot delete a session while capture is running.".to_string());
+    }
+
+    let index_entry: Option<Value> = match knowledge_base_dir() {
+        Ok(kb) => {
+            let index_path = kb.join("sessions_index.json");
+            if !index_path.exists() {
+                None
+            } else {
+                let raw = fs::read_to_string(&index_path).unwrap_or_else(|_| "[]".to_string());
+                let sessions: Vec<Value> = serde_json::from_str(&raw).unwrap_or_default();
+                sessions
+                    .into_iter()
+                    .find(|s| s.get("id").and_then(Value::as_str) == Some(id))
+            }
+        }
+        Err(_) => None,
+    };
+
+    let settings_ref = screenshots_root.as_deref();
+    let dir_to_remove = find_session_folder_on_disk(id, index_entry.as_ref(), settings_ref)?;
+
+    if let Ok(mut store) = last_capture_store().lock() {
+        if store.as_ref().map(|c| c.id.as_str()) == Some(id) {
+            *store = None;
+        }
+    }
+
+    fs::remove_dir_all(&dir_to_remove).map_err(|e| format!("failed to delete session folder: {e}"))?;
+
+    remove_session_from_knowledge_base(id)?;
+
+    Ok(format!(
+        "Session deleted (removed: {}).",
+        dir_to_remove.to_string_lossy()
+    ))
 }
 
 #[tauri::command]
@@ -1231,6 +1486,10 @@ fn stop_capture_session(app: AppHandle) -> Result<String, String> {
         .map_err(|_| "failed to lock last capture state".to_string())?;
     *last_store = Some(finished);
 
+    if let Err(e) = upsert_session_capture_dir_in_index(&current.id, &current.dir) {
+        println!("Warning: failed to persist captureDir in sessions_index: {e}");
+    }
+
     if let Some(win) = app.get_webview_window("floating-controller") {
         let _ = win.close();
     }
@@ -1380,6 +1639,7 @@ fn generate_session_analysis(
         &output.summary,
         &output.graph_nodes,
         &output.graph_edges,
+        &capture_dir,
     ) {
         println!("Warning: knowledge base merge failed: {e}");
     }
@@ -1612,7 +1872,8 @@ fn main() {
             get_session_data,
             list_capture_sessions,
             get_knowledge_graph,
-            get_all_sessions
+            get_all_sessions,
+            delete_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

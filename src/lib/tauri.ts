@@ -202,3 +202,16 @@ export async function getAllSessions(): Promise<
   const payload = await invoke<string>("get_all_sessions");
   return JSON.parse(payload);
 }
+
+export async function deleteSession(
+  id: string,
+  options?: { screenshotsRoot?: string },
+): Promise<string> {
+  if (!isTauriRuntime()) {
+    return "Web preview mode: delete session is unavailable.";
+  }
+  return invoke<string>("delete_session", {
+    id,
+    screenshotsRoot: options?.screenshotsRoot ?? null,
+  });
+}
