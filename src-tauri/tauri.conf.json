@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ScholarClaw",
+  "productName": "SmartConf Claw",
   "version": "0.1.0",
   "identifier": "com.scholarclaw.app",
   "build": {
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "ScholarClaw",
+        "title": "SmartConf Claw",
         "width": 1440,
         "height": 900,
         "resizable": true
@@ -27,6 +27,8 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": []
+    "icon": [
+      "icons/icon.icns"
+    ]
   }
 }

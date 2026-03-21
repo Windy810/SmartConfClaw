@@ -16,3 +16,12 @@ tauri = { version = "2", features = ["macos-private-api"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+# Release build: remove debug symbols so DMG won't leak symbol information.
+strip = "symbols"
+debug = 0
+incremental = false
+lto = true
+codegen-units = 1
+panic = "abort"
