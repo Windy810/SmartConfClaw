@@ -145,6 +145,7 @@ export function GraphViewer(): JSX.Element {
           </div>
         ) : (
           <ReactFlow
+            key={`reactflow-${graphRefreshNonce}`}
             nodes={flowNodes}
             edges={flowEdges}
             fitView

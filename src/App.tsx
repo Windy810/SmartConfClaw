@@ -75,6 +75,8 @@ function MainApp(): JSX.Element {
   const [showSessionPicker, setShowSessionPicker] = useState<boolean>(false);
   /** In-app confirm (window.confirm is unreliable in Tauri WebView). */
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  /** After first visit to Graph tab, keep GraphViewer mounted (hidden off-tab) so delete can refresh data. */
+  const [graphViewerMounted, setGraphViewerMounted] = useState(false);
   const audioInputSpecs = useSettingsStore((state) => state.audioInputSpecs);
   const audioSampleRate = useSettingsStore((state) => state.audioSampleRate);
   const audioChannels = useSettingsStore((state) => state.audioChannels);
@@ -88,6 +90,12 @@ function MainApp(): JSX.Element {
   const openRouterModel = useSettingsStore((state) => state.openRouterModel);
   const openRouterApiKey = useSettingsStore((state) => state.openRouterApiKey);
   const themeMode = useSettingsStore((state) => state.themeMode);
+
+  useEffect(() => {
+    if (activeView === "graph") {
+      setGraphViewerMounted(true);
+    }
+  }, [activeView]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -535,7 +543,14 @@ function MainApp(): JSX.Element {
                   <SessionViewer session={activeSession} />
                 </>
               ) : null}
-              {activeView === "graph" ? <GraphViewer /> : null}
+              {graphViewerMounted ? (
+                <div
+                  className={activeView === "graph" ? "block" : "hidden"}
+                  aria-hidden={activeView !== "graph"}
+                >
+                  <GraphViewer />
+                </div>
+              ) : null}
               {activeView === "qa" ? <QAPanel items={activeSession.qaSimulator} /> : null}
               {activeView === "settings" ? <SettingsPanel /> : null}
             </div>
