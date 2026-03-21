@@ -50,6 +50,8 @@ struct AudioInputDevice {
     index: i32,
     label: String,
     ffmpeg_spec: String,
+    /// True for virtual loopback drivers (e.g. BlackHole) used to capture system / app playback audio.
+    is_loopback: bool,
 }
 
 #[derive(Deserialize)]
@@ -208,12 +210,55 @@ fn ffmpeg_is_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Parse `[0] Device name` on a line that may be prefixed with `[AVFoundation input device @ ...]`.
+/// FFmpeg prints that prefix before the real `[index] label` — the first `[` is not the device index.
+fn label_suggests_loopback_device(label: &str) -> bool {
+    let l = label.to_lowercase();
+    l.contains("blackhole")
+        || l.contains("soundflower")
+        || l.contains("vb-audio")
+        || l.contains("virtual cable")
+        || (l.contains("loopback") && !l.contains("microphone"))
+}
+
+fn parse_avfoundation_audio_device_line(line: &str) -> Option<(i32, String)> {
+    let mut best: Option<(i32, String)> = None;
+    let mut pos = 0usize;
+    while let Some(rel_start) = line[pos..].find('[') {
+        let start = pos + rel_start;
+        if let Some(rel_end) = line.get(start + 1..).and_then(|s| s.find(']')) {
+            let end = start + 1 + rel_end;
+            let inner = line.get(start + 1..end).unwrap_or("").trim();
+            if let Ok(idx) = inner.parse::<i32>() {
+                let label = line.get(end + 1..).unwrap_or("").trim().to_string();
+                if !label.is_empty() {
+                    best = Some((idx, label));
+                }
+            }
+            pos = end + 1;
+        } else {
+            break;
+        }
+    }
+    best
+}
+
 fn list_avfoundation_audio_devices() -> Result<Vec<AudioInputDevice>, String> {
+    if env::consts::OS != "macos" {
+        return Err(
+            "Audio device listing uses FFmpeg AVFoundation and is only available on macOS."
+                .to_string(),
+        );
+    }
     if !ffmpeg_is_available() {
-        return Ok(Vec::new());
+        return Err(
+            "ffmpeg was not found in PATH. Install ffmpeg (e.g. `brew install ffmpeg`) and restart the app."
+                .to_string(),
+        );
     }
 
     let output = Command::new("ffmpeg")
+        .arg("-hide_banner")
         .arg("-f")
         .arg("avfoundation")
         .arg("-list_devices")
@@ -223,45 +268,56 @@ fn list_avfoundation_audio_devices() -> Result<Vec<AudioInputDevice>, String> {
         .output()
         .map_err(|error| format!("failed to list avfoundation devices: {error}"))?;
 
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let mut in_audio_section = false;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stdout}\n{stderr}");
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Section {
+        None,
+        Video,
+        Audio,
+    }
+    let mut section = Section::None;
     let mut devices: Vec<AudioInputDevice> = Vec::new();
 
-    for line in stderr.lines() {
+    for line in combined.lines() {
         let lower = line.to_lowercase();
-        if lower.contains("avfoundation audio devices") {
-            in_audio_section = true;
+        if lower.contains("avfoundation") && lower.contains("video devices") {
+            section = Section::Video;
             continue;
         }
-        if lower.contains("avfoundation video devices") {
-            in_audio_section = false;
+        if lower.contains("avfoundation") && lower.contains("audio devices") {
+            section = Section::Audio;
+            continue;
         }
-        if !in_audio_section {
+        if section != Section::Audio {
             continue;
         }
 
-        let start = match line.find('[') {
-            Some(value) => value,
-            None => continue,
-        };
-        let end = match line[start + 1..].find(']') {
-            Some(value) => start + 1 + value,
-            None => continue,
-        };
-        let index_text = line[start + 1..end].trim();
-        let index = match index_text.parse::<i32>() {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-        let label = line[end + 1..].trim().to_string();
-        if label.is_empty() {
-            continue;
+        if let Some((index, label)) = parse_avfoundation_audio_device_line(line) {
+            let is_loopback = label_suggests_loopback_device(&label);
+            devices.push(AudioInputDevice {
+                index,
+                label,
+                ffmpeg_spec: format!("none:{index}"),
+                is_loopback,
+            });
         }
-        devices.push(AudioInputDevice {
-            index,
-            label,
-            ffmpeg_spec: format!("none:{index}"),
-        });
+    }
+
+    if devices.is_empty() {
+        let lower = combined.to_lowercase();
+        if lower.contains("permission") || lower.contains("denied") || lower.contains("not authorized") {
+            return Err(
+                "Microphone access was denied or unavailable. On macOS: System Settings › Privacy & Security › Microphone — enable access for this app (or Terminal if you run from `cargo tauri dev`)."
+                    .to_string(),
+            );
+        }
+        return Err(
+            "Could not enumerate audio inputs: FFmpeg produced no AVFoundation audio device lines. Grant Microphone permission, update ffmpeg, or check that an input device exists."
+                .to_string(),
+        );
     }
 
     Ok(devices)
@@ -2090,6 +2146,7 @@ fn get_all_sessions() -> String {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             check_capture_prerequisites,
             list_audio_input_devices,

@@ -94,6 +94,11 @@ English: Configure capture interval and related analysis behavior to match your 
 1. Install dependencies: `npm install`
 2. Start in dev mode: `npm run tauri dev`
 
+### macOS system audio (loopback) / macOS 系统内录
+
+- **English:** macOS cannot capture “what the speakers play” without a virtual loopback device. Install something like [BlackHole](https://github.com/ExistentialAudio/BlackHole), set **System Settings → Sound → Output** to BlackHole, then refresh the audio device list in **Settings** — the device appears under **System audio (loopback)** and can be mixed with your mic.
+- **中文：** macOS 不能像 Windows 那样直接立体声混音内录。请安装虚拟声卡（如 [BlackHole](https://github.com/ExistentialAudio/BlackHole)），在「系统设置 → 声音」将输出设为 BlackHole，再在应用「设置」里刷新音频设备列表，即可在「系统内录」中勾选，并可与麦克风同时混音。
+
 如果你已经完成本地配置与密钥填写，打开应用后：
 1) 在“Meeting Capture”选择区域开始捕获  
 2) 完成转写与 AI 分析后查看总结/概念/知识图谱/问答  

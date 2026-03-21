@@ -1,4 +1,6 @@
+import { homeDir } from "@tauri-apps/api/path";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 
 import { mockAcademicSession } from "./mockData";
 import type { AcademicSession, GlobalMindMapFile, KnowledgeGraph, MindMapCategory } from "../types";
@@ -40,6 +42,8 @@ export interface AudioInputDevice {
   index: number;
   label: string;
   ffmpegSpec: string;
+  /** Virtual loopback (e.g. BlackHole) for capturing system/app playback audio */
+  isLoopback?: boolean;
 }
 
 export interface CaptureStartOptions {
@@ -72,6 +76,49 @@ function isTauriRuntime(): boolean {
   return Boolean(window.__TAURI__ || window.__TAURI_INTERNALS__);
 }
 
+/** Resolve `~/…` or absolute paths for use as dialog `defaultPath` (native folder picker). */
+async function resolveDirectoryDefaultPath(currentPath: string | undefined): Promise<string | undefined> {
+  const trimmed = currentPath?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (trimmed === "~") {
+    return homeDir();
+  }
+  if (trimmed.startsWith("~/")) {
+    const home = await homeDir();
+    return `${home}/${trimmed.slice(2)}`;
+  }
+  if (trimmed.startsWith("/")) {
+    return trimmed;
+  }
+  return undefined;
+}
+
+/**
+ * Opens the system folder picker (e.g. Finder on macOS). Returns `null` if cancelled or not in Tauri.
+ */
+export async function pickScreenshotDirectory(currentPath?: string): Promise<string | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const defaultPath = await resolveDirectoryDefaultPath(currentPath);
+  const selected = await open({
+    directory: true,
+    multiple: false,
+    defaultPath,
+  });
+
+  if (selected === null) {
+    return null;
+  }
+  if (typeof selected === "string") {
+    return selected;
+  }
+  return selected[0] ?? null;
+}
+
 export async function checkCapturePrerequisites(): Promise<CapturePrerequisites> {
   if (!isTauriRuntime()) {
     return {
@@ -86,7 +133,9 @@ export async function checkCapturePrerequisites(): Promise<CapturePrerequisites>
 
 export async function listAudioInputDevices(): Promise<AudioInputDevice[]> {
   if (!isTauriRuntime()) {
-    return [{ index: 0, label: "Default Microphone (web preview)", ffmpegSpec: "none:0" }];
+    return [
+      { index: 0, label: "Default Microphone (web preview)", ffmpegSpec: "none:0", isLoopback: false },
+    ];
   }
 
   return invoke<AudioInputDevice[]>("list_audio_input_devices");

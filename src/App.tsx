@@ -163,6 +163,30 @@ function MainApp(): JSX.Element {
     [audioInputSpecs, audioSampleRate, audioChannels, frameIntervalSec],
   );
 
+  const refreshSessionList = useCallback(async (): Promise<void> => {
+    try {
+      const list = await listCaptureSessions();
+      setSessionList(list);
+    } catch (error) {
+      setCaptureMessage(`Failed to list sessions: ${extractErrorMessage(error)}`);
+    }
+  }, []);
+
+  const syncSessionAfterCapture = useCallback(
+    async (sessionId: string): Promise<void> => {
+      setCurrentSessionId(sessionId);
+      try {
+        const fetchedSession = await getSessionData(sessionId);
+        setActiveSession(fetchedSession);
+        setCaptureMessage(t("capture.sessionSynced").replace("{id}", sessionId));
+      } catch (error) {
+        setCaptureMessage(`${t("capture.syncFailedAfterStop")} ${extractErrorMessage(error)}`);
+      }
+      await refreshSessionList();
+    },
+    [t, refreshSessionList],
+  );
+
   useEffect(() => {
     let unlistenConfirmed: (() => void) | undefined;
     let unlistenCancelled: (() => void) | undefined;
@@ -178,7 +202,7 @@ function MainApp(): JSX.Element {
       });
       unlistenStopped = await listen<string>("capture-stopped", (event) => {
         setIsCapturing(false);
-        setCaptureMessage(`Capture stopped: ${event.payload}`);
+        void syncSessionAfterCapture(event.payload);
       });
     };
 
@@ -188,7 +212,7 @@ function MainApp(): JSX.Element {
       unlistenCancelled?.();
       unlistenStopped?.();
     };
-  }, []);
+  }, [syncSessionAfterCapture]);
 
   const handleStartCapture = async (): Promise<void> => {
     setIsBusy(true);
@@ -203,9 +227,9 @@ function MainApp(): JSX.Element {
   const handleStopCapture = async (): Promise<void> => {
     setIsBusy(true);
     try {
-      const sessionId = await stopCaptureSession();
+      await stopCaptureSession();
       setIsCapturing(false);
-      setCaptureMessage(`Capture stopped: ${sessionId}`);
+      // Session sync + message: handled by `capture-stopped` listener (same as floating stop)
     } catch (error) {
       setCaptureMessage(`Failed to stop capture: ${extractErrorMessage(error)}`);
     } finally {
@@ -263,15 +287,6 @@ function MainApp(): JSX.Element {
       setCaptureMessage(`Failed to generate analysis: ${extractErrorMessage(error)}`);
     } finally {
       setIsBusy(false);
-    }
-  };
-
-  const refreshSessionList = async (): Promise<void> => {
-    try {
-      const list = await listCaptureSessions();
-      setSessionList(list);
-    } catch (error) {
-      setCaptureMessage(`Failed to list sessions: ${extractErrorMessage(error)}`);
     }
   };
 
@@ -480,12 +495,12 @@ function MainApp(): JSX.Element {
                                         ) : null}
                                       </div>
                                       {s.tags.length > 0 ? (
-                                        <div className="mt-0.5 flex flex-wrap gap-1">
-                                          {s.tags.slice(0, 3).map((tag: string, i: number) => (
+                                        <div className="mt-0.5 flex w-full min-w-0 flex-wrap gap-1.5">
+                                          {s.tags.slice(0, 6).map((tag: string, i: number) => (
                                             <Badge
                                               key={`${tag}-${i}`}
                                               variant="secondary"
-                                              className="h-4 max-w-[80px] truncate px-1.5 text-[10px] leading-none"
+                                              className="h-auto min-h-5 w-fit max-w-full shrink px-2 py-0.5 text-left text-[10px] leading-snug text-zinc-700 whitespace-normal break-words dark:text-zinc-200"
                                             >
                                               {String(tag).replace(/^"|"$/g, "")}
                                             </Badge>

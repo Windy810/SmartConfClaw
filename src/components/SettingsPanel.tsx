@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useT } from "../lib/i18n";
-import { listAudioInputDevices, type AudioInputDevice } from "../lib/tauri";
+import { listAudioInputDevices, pickScreenshotDirectory, type AudioInputDevice } from "../lib/tauri";
 import {
   useSettingsStore,
   type AppLanguage,
@@ -77,7 +77,7 @@ export function SettingsPanel(): JSX.Element {
   const resetDefaults = useSettingsStore((state) => state.resetDefaults);
 
   const [draftDirectory, setDraftDirectory] = useState<string>(screenshotDirectory);
-  const [draftAudioInputText, setDraftAudioInputText] = useState<string>(audioInputSpecs.join("\n"));
+  const [draftSelectedSpecs, setDraftSelectedSpecs] = useState<string[]>(() => [...audioInputSpecs]);
   const [draftSampleRate, setDraftSampleRate] = useState<string>(String(audioSampleRate));
   const [draftChannels, setDraftChannels] = useState<string>(String(audioChannels));
   const [draftFrameIntervalSec, setDraftFrameIntervalSec] = useState<string>(String(frameIntervalSec));
@@ -88,18 +88,62 @@ export function SettingsPanel(): JSX.Element {
   const [draftOpenRouterModel, setDraftOpenRouterModel] = useState<string>(openRouterModel);
   const [draftOpenRouterApiKey, setDraftOpenRouterApiKey] = useState<string>(openRouterApiKey);
   const [audioDevices, setAudioDevices] = useState<AudioInputDevice[]>([]);
+  const [audioListError, setAudioListError] = useState<string | null>(null);
+
+  const loadDevices = useCallback(async (): Promise<void> => {
+    setAudioListError(null);
+    try {
+      const devices = await listAudioInputDevices();
+      setAudioDevices(devices);
+    } catch (error) {
+      setAudioDevices([]);
+      const msg =
+        error instanceof Error
+          ? error.message
+          : typeof error === "string"
+            ? error
+            : "Unknown error";
+      setAudioListError(msg);
+    }
+  }, []);
 
   useEffect(() => {
-    const loadDevices = async (): Promise<void> => {
-      try {
-        const devices = await listAudioInputDevices();
-        setAudioDevices(devices);
-      } catch (_error) {
-        setAudioDevices([]);
-      }
-    };
     void loadDevices();
+  }, [loadDevices]);
+
+  useEffect(() => {
+    setDraftSelectedSpecs([...audioInputSpecs]);
+  }, [audioInputSpecs]);
+
+  const orphanSpecs = useMemo(
+    () => draftSelectedSpecs.filter((spec) => !audioDevices.some((d) => d.ffmpegSpec === spec)),
+    [draftSelectedSpecs, audioDevices],
+  );
+
+  const micDevices = useMemo(
+    () => audioDevices.filter((d) => !d.isLoopback),
+    [audioDevices],
+  );
+  const loopbackDevices = useMemo(
+    () => audioDevices.filter((d) => d.isLoopback),
+    [audioDevices],
+  );
+
+  const toggleAudioSpec = useCallback((spec: string) => {
+    setDraftSelectedSpecs((prev) => {
+      if (prev.includes(spec)) {
+        return prev.filter((s) => s !== spec);
+      }
+      return [...prev, spec];
+    });
   }, []);
+
+  const handleBrowseScreenshotDir = useCallback(async () => {
+    const path = await pickScreenshotDirectory(draftDirectory);
+    if (path) {
+      setDraftDirectory(path);
+    }
+  }, [draftDirectory]);
 
   const inputCls =
     "w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700 outline-none ring-zinc-300 transition focus:ring-2 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:ring-zinc-600";
@@ -138,36 +182,183 @@ export function SettingsPanel(): JSX.Element {
             <label htmlFor="screenshot-directory" className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
               {t("settings.screenshotDir")}
             </label>
-            <input
-              id="screenshot-directory"
-              type="text"
-              value={draftDirectory}
-              onChange={(event) => setDraftDirectory(event.target.value)}
-              className={inputCls}
-            />
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">{t("settings.screenshotDirManualHint")}</p>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+              <input
+                id="screenshot-directory"
+                type="text"
+                value={draftDirectory}
+                onChange={(event) => setDraftDirectory(event.target.value)}
+                className={`${inputCls} min-w-0 flex-1`}
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="default"
+                className="shrink-0 sm:self-stretch"
+                onClick={() => void handleBrowseScreenshotDir()}
+              >
+                {t("settings.browseScreenshotDir")}
+              </Button>
+            </div>
             <Button size="sm" variant="outline" onClick={() => setScreenshotDirectory(draftDirectory)}>
               {t("settings.saveDir")}
             </Button>
           </div>
 
-          <div className="space-y-2">
-            <label htmlFor="audio-input-specs" className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
-              {t("settings.audioInputs")}
+          <div className="space-y-2 border-t border-zinc-200/80 pt-4 dark:border-zinc-800">
+            <label htmlFor="frame-interval-sec" className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
+              {t("settings.frameInterval")}
             </label>
-            <textarea
-              id="audio-input-specs"
-              value={draftAudioInputText}
-              onChange={(event) => setDraftAudioInputText(event.target.value)}
-              className={`min-h-20 ${inputCls}`}
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">{t("settings.frameIntervalDesc")}</p>
+            <input
+              id="frame-interval-sec"
+              type="number"
+              min={1}
+              max={60}
+              value={draftFrameIntervalSec}
+              onChange={(event) => setDraftFrameIntervalSec(event.target.value)}
+              className={inputCls}
+              placeholder={t("settings.frameIntervalHint")}
             />
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setFrameIntervalSec(Number.parseInt(draftFrameIntervalSec, 10) || 2);
+              }}
+            >
+              {t("settings.saveFrameInterval")}
+            </Button>
+          </div>
+
+          <div className="space-y-2 border-t border-zinc-200/80 pt-4 dark:border-zinc-800">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-200">{t("settings.audioInputs")}</label>
+              <Button type="button" size="sm" variant="outline" className="h-7 text-xs" onClick={() => void loadDevices()}>
+                {t("settings.refreshAudioDevices")}
+              </Button>
+            </div>
             <p className="text-xs text-zinc-500 dark:text-zinc-400">{t("settings.audioInputsHint")}</p>
-            {audioDevices.length > 0 ? (
-              <div className="rounded-lg border border-zinc-200/80 p-2 text-xs dark:border-zinc-800">
-                {audioDevices.map((device) => (
-                  <p key={device.ffmpegSpec} className="text-zinc-600 dark:text-zinc-300">
-                    [{device.index}] {device.label} {"->"} {device.ffmpegSpec}
-                  </p>
-                ))}
+            {audioListError ? (
+              <div className="rounded-lg border border-red-200/90 bg-red-50 px-3 py-2 text-xs text-red-900 dark:border-red-900/50 dark:bg-red-950/50 dark:text-red-100">
+                <p className="font-semibold">{t("settings.audioDeviceErrorTitle")}</p>
+                <p className="mt-1 whitespace-pre-wrap break-words leading-relaxed">{audioListError}</p>
+              </div>
+            ) : null}
+            {!audioListError && audioDevices.length === 0 ? (
+              <p className="rounded-lg border border-amber-200/80 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200">
+                {t("settings.audioNoDevices")}
+              </p>
+            ) : null}
+            {!audioListError && audioDevices.length > 0 ? (
+              <div className="space-y-2">
+                <div className="max-h-48 space-y-3 overflow-y-auto rounded-lg border border-zinc-200/80 bg-white p-2 dark:border-zinc-800 dark:bg-zinc-950/40">
+                  {micDevices.length > 0 ? (
+                    <div>
+                      <p className="mb-1.5 text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                        {t("settings.audioMicSection")}
+                      </p>
+                      <ul className="space-y-1">
+                        {micDevices.map((device) => {
+                          const checked = draftSelectedSpecs.includes(device.ffmpegSpec);
+                          return (
+                            <li key={`${device.index}-${device.ffmpegSpec}`}>
+                              <label className="flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-1.5 transition hover:bg-zinc-100 dark:hover:bg-zinc-800/80">
+                                <input
+                                  type="checkbox"
+                                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-400 dark:border-zinc-600 dark:bg-zinc-900 dark:focus:ring-zinc-600"
+                                  checked={checked}
+                                  onChange={() => {
+                                    toggleAudioSpec(device.ffmpegSpec);
+                                  }}
+                                />
+                                <span className="min-w-0 flex-1 text-sm leading-snug">
+                                  <span className="font-medium text-zinc-800 dark:text-zinc-100">{device.label}</span>
+                                  <span className="mt-0.5 block font-mono text-[10px] text-zinc-500 dark:text-zinc-400">
+                                    {device.ffmpegSpec}
+                                  </span>
+                                </span>
+                              </label>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  ) : null}
+                  {loopbackDevices.length > 0 ? (
+                    <div>
+                      <p className="mb-1.5 text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+                        {t("settings.audioLoopbackSection")}
+                      </p>
+                      <ul className="space-y-1">
+                        {loopbackDevices.map((device) => {
+                          const checked = draftSelectedSpecs.includes(device.ffmpegSpec);
+                          return (
+                            <li key={`${device.index}-${device.ffmpegSpec}`}>
+                              <label className="flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-1.5 transition hover:bg-zinc-100 dark:hover:bg-zinc-800/80">
+                                <input
+                                  type="checkbox"
+                                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-400 dark:border-zinc-600 dark:bg-zinc-900 dark:focus:ring-zinc-600"
+                                  checked={checked}
+                                  onChange={() => {
+                                    toggleAudioSpec(device.ffmpegSpec);
+                                  }}
+                                />
+                                <span className="min-w-0 flex-1 text-sm leading-snug">
+                                  <span className="flex flex-wrap items-center gap-2 font-medium text-zinc-800 dark:text-zinc-100">
+                                    {device.label}
+                                    <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal">
+                                      {t("settings.audioLoopbackBadge")}
+                                    </Badge>
+                                  </span>
+                                  <span className="mt-0.5 block font-mono text-[10px] text-zinc-500 dark:text-zinc-400">
+                                    {device.ffmpegSpec}
+                                  </span>
+                                </span>
+                              </label>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  ) : null}
+                </div>
+                {loopbackDevices.length === 0 && micDevices.length > 0 ? (
+                  <div className="rounded-lg border border-sky-200/90 bg-sky-50/90 px-3 py-2 text-xs leading-relaxed text-sky-950 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-100">
+                    <p>{t("settings.audioLoopbackEmpty")}</p>
+                    <a
+                      href="https://github.com/ExistentialAudio/BlackHole"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-1 inline-block font-medium text-sky-800 underline underline-offset-2 hover:text-sky-900 dark:text-sky-200 dark:hover:text-sky-50"
+                    >
+                      BlackHole (GitHub)
+                    </a>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+            {orphanSpecs.length > 0 ? (
+              <div className="space-y-1.5 rounded-lg border border-zinc-200/80 bg-zinc-50/80 p-2 dark:border-zinc-800 dark:bg-zinc-900/40">
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t("settings.audioOrphanSpecs")}</p>
+                <ul className="space-y-1">
+                  {orphanSpecs.map((spec) => (
+                    <li key={spec}>
+                      <label className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-800">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 shrink-0 rounded border-zinc-300 dark:border-zinc-600"
+                          checked={draftSelectedSpecs.includes(spec)}
+                          onChange={() => {
+                            toggleAudioSpec(spec);
+                          }}
+                        />
+                        <span className="font-mono text-xs text-zinc-700 dark:text-zinc-300">{spec}</span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
               </div>
             ) : null}
             <div className="grid grid-cols-2 gap-2">
@@ -186,33 +377,13 @@ export function SettingsPanel(): JSX.Element {
                 placeholder="Channels"
               />
             </div>
-            <div className="space-y-1">
-              <label htmlFor="frame-interval-sec" className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
-                {t("settings.frameInterval")}
-              </label>
-              <input
-                id="frame-interval-sec"
-                type="number"
-                min={1}
-                max={60}
-                value={draftFrameIntervalSec}
-                onChange={(event) => setDraftFrameIntervalSec(event.target.value)}
-                className={inputCls}
-                placeholder={t("settings.frameIntervalHint")}
-              />
-            </div>
             <Button
               size="sm"
               variant="outline"
               onClick={() => {
-                const specs = draftAudioInputText
-                  .split("\n")
-                  .map((line) => line.trim())
-                  .filter((line) => line.length > 0);
-                setAudioInputSpecs(specs.length > 0 ? specs : ["none:0"]);
+                setAudioInputSpecs(draftSelectedSpecs.length > 0 ? draftSelectedSpecs : ["none:0"]);
                 setAudioSampleRate(Number.parseInt(draftSampleRate, 10) || 16000);
                 setAudioChannels(Number.parseInt(draftChannels, 10) || 1);
-                setFrameIntervalSec(Number.parseInt(draftFrameIntervalSec, 10) || 2);
               }}
             >
               {t("settings.saveAudioConfig")}
