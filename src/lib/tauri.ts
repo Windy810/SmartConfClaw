@@ -1,7 +1,33 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import { mockAcademicSession } from "./mockData";
-import type { AcademicSession, KnowledgeGraph } from "../types";
+import type { AcademicSession, GlobalMindMapFile, KnowledgeGraph, MindMapCategory } from "../types";
+
+function normalizeMindMap(raw: unknown): GlobalMindMapFile | null {
+  if (raw == null) return null;
+  if (typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  if ("trees" in o && Array.isArray(o.trees)) {
+    return raw as GlobalMindMapFile;
+  }
+  if ("topic" in o || "categories" in o || "keywords" in o) {
+    const kw = o.keywords;
+    const keywords =
+      Array.isArray(kw) && kw.length > 0 ? kw.map((k) => String(k)) : undefined;
+    return {
+      version: 2,
+      trees: [
+        {
+          sessionId: "legacy",
+          topic: String(o.topic ?? ""),
+          ...(keywords ? { keywords } : {}),
+          categories: (Array.isArray(o.categories) ? o.categories : []) as MindMapCategory[],
+        },
+      ],
+    };
+  }
+  return null;
+}
 
 export interface CapturePrerequisites {
   platform: string;
@@ -184,13 +210,19 @@ export async function generateSessionAnalysis(
 
 export async function getKnowledgeGraph(): Promise<KnowledgeGraph> {
   if (!isTauriRuntime()) {
-    return { nodes: [], edges: [] };
+    return { nodes: [], edges: [], mindMap: null };
   }
   const payload = await invoke<KnowledgeGraph | string>("get_knowledge_graph");
-  if (typeof payload === "string") {
-    return JSON.parse(payload) as KnowledgeGraph;
-  }
-  return payload;
+  const graph =
+    typeof payload === "string"
+      ? (JSON.parse(payload) as Record<string, unknown>)
+      : (payload as unknown as Record<string, unknown>);
+  const rawMindMap = graph.mindMap ?? graph.mind_map;
+  return {
+    nodes: (graph.nodes as KnowledgeGraph["nodes"]) ?? [],
+    edges: (graph.edges as KnowledgeGraph["edges"]) ?? [],
+    mindMap: normalizeMindMap(rawMindMap),
+  };
 }
 
 export async function getAllSessions(): Promise<

@@ -663,6 +663,8 @@ struct AnalysisOutput {
     graph_nodes: Vec<Value>,
     graph_edges: Vec<Value>,
     references: Vec<Value>,
+    /// Domain mind map: theme keywords + thematic branches extending the research field.
+    mind_map: Value,
 }
 
 fn call_openrouter_analysis_once(
@@ -683,6 +685,20 @@ and output STRICT JSON with this exact shape:\n\
   \"qa\": [\n\
     {{\"question\": \"<interview/defense question>\", \"suggestedAnswerPoints\": [\"<point>\", ...]}}\n\
   ],\n\
+  \"mindMap\": {{\n\
+    \"topic\": \"<single line: the session's research theme / core question in this field>\",\n\
+    \"keywords\": [\"<3-6 short theme keywords from this talk>\"],\n\
+    \"categories\": [\n\
+      {{\n\
+        \"id\": \"b1\",\n\
+        \"label\": \"<first branch: a facet of THIS research domain (bilingual short label OK)>\",\n\
+        \"group\": \"concept\",\n\
+        \"entries\": [\n\
+          {{\"id\": \"e1\", \"label\": \"<concrete point from slides/transcript>\", \"children\": [{{\"id\": \"e1a\", \"label\": \"<detail>\"}}]}}\n\
+        ]\n\
+      }}\n\
+    ]\n\
+  }},\n\
   \"graphNodes\": [\n\
     {{\"id\": \"<lowercase_snake_case>\", \"label\": \"<Display Name>\", \"group\": \"<method|dataset|metric|author|concept>\"}}\n\
   ],\n\
@@ -694,14 +710,25 @@ and output STRICT JSON with this exact shape:\n\
   ]\n\
 }}\n\
 \n\
-Constraints:\n\
+Mind map rules (PRIMARY — must be useful for understanding the RESEARCH FIELD, not a generic bucket list):\n\
+- Goal: a **domain mind map** centered on this session: start from the **theme** and **extend outward** how this subfield is structured (problems, ideas, methods, evidence, limits, directions).\n\
+- mindMap.topic: ONE line naming the **core research theme** (what field + what angle). Not a generic title like \"Meeting summary\".\n\
+- mindMap.keywords: 3–6 **theme keywords** (short phrases) that anchor the map; must be specific to this talk.\n\
+- mindMap.categories: **5 to 7** first-level branches. Each branch `label` must be a **facet of this research domain** that naturally extends the theme (examples of *types* of labels — pick what fits the content: 核心问题与动机 / 理论或数学基础 / 方法路线与算法 / 数据与实验设置 / 评测与指标 / 相关工作与脉络 / 局限与开放问题 / 应用与影响). **Do NOT** use a fixed 5-slot template if the talk does not cover that facet; **omit or merge** branches so every branch is substantive.\n\
+- Each category: 2–4 `entries`; each entry: 0–3 `children`. Prefer **concrete** names (method names, dataset names, metrics, author/venue only when central to the narrative).\n\
+- `group` on each category is only for UI color: use a mix of method|dataset|metric|author|concept|context|theme across branches.\n\
+- Unique `id` for every category/entry/child across mindMap; labels under ~48 chars.\n\
+- Total leaf-ish nodes across the whole mindMap roughly 25–45; stay readable.\n\
+\n\
+Legacy graph (optional, keep SMALL):\n\
+- graphNodes: 0-8 nodes only if needed; may be empty [].\n\
+- graphEdges: 0-10 edges only; may be empty [].\n\
+- If you fill graphNodes, ids must be lowercase_snake_case and edges must reference valid ids.\n\
+\n\
+Other constraints:\n\
 - tags: 3-8 relevant topic tags\n\
 - concepts: 3-10 key technical concepts with clear definitions\n\
 - qa: 3-5 PhD interview/defense questions, each with 3-4 answer points\n\
-- graphNodes: 5-15 nodes (methods, datasets, metrics, authors, concepts)\n\
-- graphEdges: 5-20 edges connecting nodes by their relationships\n\
-- All node ids must be lowercase_snake_case and unique\n\
-- All edge source/target must reference valid node ids\n\
 - references: 3-8 real, well-known papers or high-quality technical articles closely related to the transcript topics. \
 Prioritize seminal papers, recent survey papers, and authoritative blog posts. \
 Use real arxiv/doi/blog URLs when possible. If you are unsure of the exact URL, provide the best known citation info and leave url as an empty string.\n\
@@ -831,11 +858,25 @@ Transcript:\n{}",
         .cloned()
         .unwrap_or_default();
 
+    let mind_map = parsed
+        .get("mindMap")
+        .cloned()
+        .unwrap_or_else(|| json!({"topic": "", "keywords": [], "categories": []}));
+
     if summary.is_empty() && qa.is_empty() {
         return Err("model output missing both summary and qa".to_string());
     }
 
-    Ok(AnalysisOutput { summary, tags, concepts, qa, graph_nodes, graph_edges, references })
+    Ok(AnalysisOutput {
+        summary,
+        tags,
+        concepts,
+        qa,
+        graph_nodes,
+        graph_edges,
+        references,
+        mind_map,
+    })
 }
 
 fn call_openrouter_analysis(
@@ -954,6 +995,160 @@ fn upsert_session_capture_dir_in_index(session_id: &str, capture_dir: &Path) -> 
     .map_err(|e| format!("failed to write sessions_index.json: {e}"))
 }
 
+/// Append/replace one session's AI mind map in `global_mind_map.json` (trees[]).
+fn merge_mind_map_tree(session_id: &str, mind_map: &Value) -> Result<(), String> {
+    let kb_dir = knowledge_base_dir()?;
+    let path = kb_dir.join("global_mind_map.json");
+    let mut root: Value = if path.exists() {
+        let raw = fs::read_to_string(&path).unwrap_or_else(|_| "{}".to_string());
+        serde_json::from_str(&raw).unwrap_or_else(|_| json!({"version": 2, "trees": []}))
+    } else {
+        json!({"version": 2, "trees": []})
+    };
+    let trees = root
+        .get_mut("trees")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "global_mind_map invalid: missing trees".to_string())?;
+    trees.retain(|t| t.get("sessionId").and_then(Value::as_str) != Some(session_id));
+    let topic = mind_map
+        .get("topic")
+        .and_then(Value::as_str)
+        .unwrap_or("Session");
+    let categories = mind_map.get("categories").cloned().unwrap_or_else(|| json!([]));
+    let keywords = mind_map.get("keywords").cloned().unwrap_or_else(|| json!([]));
+    trees.push(json!({
+        "sessionId": session_id,
+        "topic": topic,
+        "keywords": keywords,
+        "categories": categories
+    }));
+    fs::write(
+        &path,
+        serde_json::to_string_pretty(&root).unwrap_or_else(|_| "{}".to_string()),
+    )
+    .map_err(|e| format!("failed to write global_mind_map.json: {e}"))?;
+    Ok(())
+}
+
+fn remove_mind_map_tree(session_id: &str) -> Result<(), String> {
+    let kb_dir = knowledge_base_dir()?;
+    let path = kb_dir.join("global_mind_map.json");
+    if !path.exists() {
+        return Ok(());
+    }
+    let raw = fs::read_to_string(&path).unwrap_or_else(|_| "{}".to_string());
+    let mut root: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({"version": 2, "trees": []}));
+    if let Some(trees) = root.get_mut("trees").and_then(Value::as_array_mut) {
+        trees.retain(|t| t.get("sessionId").and_then(Value::as_str) != Some(session_id));
+    }
+    fs::write(
+        &path,
+        serde_json::to_string_pretty(&root).unwrap_or_else(|_| "{}".to_string()),
+    )
+    .map_err(|e| format!("failed to write global_mind_map.json: {e}"))?;
+    Ok(())
+}
+
+/// One session tree from `mind_map.json` → API tree shape.
+fn read_session_mind_map_tree(session_id: &str, cap_dir: &Path) -> Option<Value> {
+    let mm_path = cap_dir.join("mind_map.json");
+    if !mm_path.exists() {
+        return None;
+    }
+    let mm_raw = fs::read_to_string(&mm_path).ok()?;
+    let mm: Value = serde_json::from_str(&mm_raw).ok()?;
+    let topic = mm.get("topic").cloned().unwrap_or_else(|| json!(""));
+    let categories = mm.get("categories").cloned().unwrap_or_else(|| json!([]));
+    let keywords = mm.get("keywords").cloned().unwrap_or_else(|| json!([]));
+    let topic_empty = topic.as_str().map(|s| s.trim().is_empty()).unwrap_or(true);
+    let cat_empty = categories.as_array().map(|a| a.is_empty()).unwrap_or(true);
+    let kw_empty = keywords.as_array().map(|a| a.is_empty()).unwrap_or(true);
+    if topic_empty && cat_empty && kw_empty {
+        return None;
+    }
+    Some(json!({
+        "sessionId": session_id,
+        "topic": topic,
+        "keywords": keywords,
+        "categories": categories
+    }))
+}
+
+/// Merge `global_mind_map.json` with any per-session `mind_map.json` not yet listed in `trees`.
+/// Fixes cases where the graph merged but `global_mind_map.json` was missing or outdated.
+fn build_mind_map_payload(kb_dir: &Path) -> Value {
+    let mut trees: Vec<Value> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    let global_path = kb_dir.join("global_mind_map.json");
+    if global_path.exists() {
+        if let Ok(raw) = fs::read_to_string(&global_path) {
+            if let Ok(mm) = serde_json::from_str::<Value>(&raw) {
+                if let Some(arr) = mm.get("trees").and_then(Value::as_array) {
+                    for t in arr {
+                        if let Some(sid) = t.get("sessionId").and_then(Value::as_str) {
+                            seen.insert(sid.to_string());
+                        }
+                        trees.push(t.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let index_path = kb_dir.join("sessions_index.json");
+    if index_path.exists() {
+        let raw = fs::read_to_string(&index_path).unwrap_or_else(|_| "[]".to_string());
+        if let Ok(sessions) = serde_json::from_str::<Vec<Value>>(&raw) {
+            for entry in sessions {
+                let Some(sid) = entry.get("id").and_then(Value::as_str) else {
+                    continue;
+                };
+                if seen.contains(sid) {
+                    continue;
+                }
+                let cap_dir = entry
+                    .get("captureDir")
+                    .and_then(Value::as_str)
+                    .map(|s| PathBuf::from(s.trim()))
+                    .filter(|p| p.is_dir());
+                let cap_dir = cap_dir.or_else(|| captures_root_dir().map(|r| r.join(sid)));
+                let cap_dir = match cap_dir {
+                    Some(p) if p.is_dir() => p,
+                    _ => continue,
+                };
+                if let Some(tree) = read_session_mind_map_tree(sid, &cap_dir) {
+                    seen.insert(sid.to_string());
+                    trees.push(tree);
+                }
+            }
+        }
+    }
+
+    if let Some(root) = captures_root_dir() {
+        if let Ok(entries) = fs::read_dir(&root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let Some(sid) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                if seen.contains(sid) {
+                    continue;
+                }
+                if let Some(tree) = read_session_mind_map_tree(sid, &path) {
+                    seen.insert(sid.to_string());
+                    trees.push(tree);
+                }
+            }
+        }
+    }
+
+    json!({ "version": 2, "trees": trees })
+}
+
 fn merge_session_into_knowledge_base(
     session_id: &str,
     tags: &[String],
@@ -961,6 +1156,7 @@ fn merge_session_into_knowledge_base(
     graph_nodes: &[Value],
     graph_edges: &[Value],
     capture_session_dir: &Path,
+    mind_map: &Value,
 ) -> Result<(), String> {
     let kb_dir = knowledge_base_dir()?;
 
@@ -1079,6 +1275,8 @@ fn merge_session_into_knowledge_base(
     )
     .map_err(|e| format!("failed to write global_graph.json: {e}"))?;
 
+    merge_mind_map_tree(session_id, mind_map)?;
+
     Ok(())
 }
 
@@ -1101,6 +1299,7 @@ fn remove_session_from_knowledge_base(session_id: &str) -> Result<(), String> {
 
     let graph_path = kb_dir.join("global_graph.json");
     if !graph_path.exists() {
+        remove_mind_map_tree(session_id)?;
         return Ok(());
     }
 
@@ -1174,6 +1373,8 @@ fn remove_session_from_knowledge_base(session_id: &str) -> Result<(), String> {
         serde_json::to_string_pretty(&global).unwrap_or_else(|_| "{}".to_string()),
     )
     .map_err(|e| format!("failed to write global_graph.json: {e}"))?;
+
+    remove_mind_map_tree(session_id)?;
 
     Ok(())
 }
@@ -1629,6 +1830,10 @@ fn generate_session_analysis(
         .unwrap_or_else(|_| "{}".to_string()),
     )?;
     write(
+        "mind_map.json",
+        &serde_json::to_string_pretty(&output.mind_map).unwrap_or_else(|_| "{}".to_string()),
+    )?;
+    write(
         "references.json",
         &serde_json::to_string_pretty(&output.references).unwrap_or_else(|_| "[]".to_string()),
     )?;
@@ -1640,15 +1845,23 @@ fn generate_session_analysis(
         &output.graph_nodes,
         &output.graph_edges,
         &capture_dir,
+        &output.mind_map,
     ) {
         println!("Warning: knowledge base merge failed: {e}");
     }
 
+    let cat_count = output
+        .mind_map
+        .get("categories")
+        .and_then(Value::as_array)
+        .map(|a| a.len())
+        .unwrap_or(0);
     let stats = format!(
-        "tags={} concepts={} refs={} nodes={} edges={}",
+        "tags={} concepts={} refs={} mindCategories={} graphNodes={} graphEdges={}",
         output.tags.len(),
         output.concepts.len(),
         output.references.len(),
+        cat_count,
         output.graph_nodes.len(),
         output.graph_edges.len()
     );
@@ -1834,14 +2047,26 @@ fn list_capture_sessions() -> String {
 
 #[tauri::command]
 fn get_knowledge_graph() -> String {
-    let graph_path = match knowledge_base_dir() {
-        Ok(dir) => dir.join("global_graph.json"),
-        Err(_) => return json!({"nodes": [], "edges": []}).to_string(),
+    let kb_dir = match knowledge_base_dir() {
+        Ok(d) => d,
+        Err(_) => {
+            return json!({"nodes": [], "edges": [], "mindMap": Value::Null}).to_string();
+        }
     };
-    if !graph_path.exists() {
-        return json!({"nodes": [], "edges": []}).to_string();
-    }
-    fs::read_to_string(&graph_path).unwrap_or_else(|_| json!({"nodes": [], "edges": []}).to_string())
+    let graph_path = kb_dir.join("global_graph.json");
+
+    let mut out = if graph_path.exists() {
+        fs::read_to_string(&graph_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .unwrap_or_else(|| json!({"nodes": [], "edges": []}))
+    } else {
+        json!({"nodes": [], "edges": []})
+    };
+
+    out["mindMap"] = build_mind_map_payload(&kb_dir);
+
+    out.to_string()
 }
 
 #[tauri::command]

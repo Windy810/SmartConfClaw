@@ -97,6 +97,14 @@ function MainApp(): JSX.Element {
     }
   }, [activeView]);
 
+  const prevNavViewRef = useRef<NavView>(activeView);
+  useEffect(() => {
+    if (activeView === "graph" && prevNavViewRef.current !== "graph") {
+      bumpGraphRefresh();
+    }
+    prevNavViewRef.current = activeView;
+  }, [activeView, bumpGraphRefresh]);
+
   useEffect(() => {
     const root = document.documentElement;
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -248,6 +256,7 @@ function MainApp(): JSX.Element {
     try {
       const result = await generateSessionAnalysis(currentSessionId, openRouterApiKey, openRouterModel);
       setCaptureMessage(`AI analysis generated: ${result}`);
+      bumpGraphRefresh();
       const fetchedSession = await getSessionData(currentSessionId);
       setActiveSession(fetchedSession);
     } catch (error) {
