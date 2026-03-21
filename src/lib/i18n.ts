@@ -21,6 +21,20 @@ const en = {
   "capture.stop": "Stop",
   "capture.startCapture": "Start Capture",
   "capture.ready": "Ready to capture",
+  "capture.sourceMode": "Capture source",
+  "capture.sourceRegion": "Region (overlay)",
+  "capture.sourceDisplay": "Full-screen desktop (per monitor)",
+  "capture.sourceDisplaySub":
+    "Targets the physical screen. After you full-screen an app, macOS puts it on its own Space; we capture whatever is currently shown on that monitor.",
+  "capture.selectDisplay": "Display",
+  "capture.refreshDisplays": "Refresh",
+  "capture.silentHint":
+    "No floating REC bar; stop from this window. macOS may show the screen-recording indicator in the menu bar.",
+  "capture.fullscreenSpaceExplainer":
+    "On macOS, a full-screen app uses a separate Space (Mission Control “desktop”). This mode records the monitor’s current pixels each interval—so stay on the Space you want, or use a second monitor for slides while you work on the other screen. Switching Spaces on the same monitor changes what is recorded.",
+  "capture.minimizeOnStart": "Minimize app when capture starts",
+  "capture.backgroundStarted": "Background capture started: {id}",
+  "capture.noDisplays": "No displays found. Click Refresh or check Screen Recording permission.",
 
   // Session picker
   "sessions.title": "Local Sessions",
@@ -157,6 +171,20 @@ const zh: Record<string, string> = {
   "capture.stop": "停止",
   "capture.startCapture": "开始捕获",
   "capture.ready": "准备就绪",
+  "capture.sourceMode": "捕获来源",
+  "capture.sourceRegion": "框选区域（遮罩）",
+  "capture.sourceDisplay": "全屏桌面（按显示器）",
+  "capture.sourceDisplaySub":
+    "按物理屏幕抓取。全屏应用会进入独立桌面（Space）；录制的是该显示器「当前画面上」的内容。",
+  "capture.selectDisplay": "显示器",
+  "capture.refreshDisplays": "刷新",
+  "capture.silentHint":
+    "不显示置顶悬浮录制条，请在本窗口点击「停止」。macOS 可能在菜单栏显示录屏指示。",
+  "capture.fullscreenSpaceExplainer":
+    "macOS 进入全屏后会有独立「桌面」（调度中心里多出来的那一页）。本模式按固定间隔截取**整块物理显示器**的当前画面：请先切到要录的全屏/桌面再点开始；若在同一块屏上切换到别的桌面，画面会跟着变。若希望一边录全屏幻灯片、一边在本机做别的事，建议使用**双屏**（一屏放全屏演示、另一屏办公）。",
+  "capture.minimizeOnStart": "开始捕获时最小化主窗口",
+  "capture.backgroundStarted": "后台捕获已开始：{id}",
+  "capture.noDisplays": "未检测到显示器，请点击刷新或检查「屏幕录制」权限。",
 
   // Session picker
   "sessions.title": "本地会话",

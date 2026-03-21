@@ -173,16 +173,34 @@ export async function cancelRegionSelection(): Promise<void> {
   return invoke<void>("cancel_region_selection");
 }
 
-export async function startCaptureSession(
-  options: CaptureStartOptions,
-  region?: CaptureRegion | null,
-): Promise<string> {
+export interface CaptureDisplayInfo {
+  index: number;
+  label: string;
+  width: number;
+  height: number;
+}
+
+export async function listCaptureDisplays(): Promise<CaptureDisplayInfo[]> {
+  if (!isTauriRuntime()) {
+    return [{ index: 1, label: "Primary display (web preview)", width: 1920, height: 1080 }];
+  }
+  return invoke<CaptureDisplayInfo[]>("list_capture_displays");
+}
+
+export async function startCaptureSession(args: {
+  options: CaptureStartOptions;
+  region?: CaptureRegion | null;
+  displayIndex?: number | null;
+  silent?: boolean;
+}): Promise<string> {
   if (!isTauriRuntime()) {
     return "session-web-preview";
   }
   return invoke<string>("start_capture_session", {
-    options,
-    region: region ?? null,
+    options: args.options,
+    region: args.region ?? null,
+    displayIndex: args.displayIndex ?? null,
+    silent: args.silent ?? null,
   });
 }
 

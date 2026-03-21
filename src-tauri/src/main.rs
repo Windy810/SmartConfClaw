@@ -27,6 +27,8 @@ struct ActiveCapture {
     frame_sampler_stop: Arc<AtomicBool>,
     frame_sampler_handle: Option<JoinHandle<()>>,
     region: Option<CaptureRegion>,
+    /// 1-based index for `screencapture -D` (whole display). When set, region rects are ignored for capture.
+    display_index: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -72,6 +74,17 @@ struct CaptureRegion {
     height: f64,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CaptureDisplayInfo {
+    /// 1-based index, matches `screencapture -D` and the picker in the UI.
+    index: u32,
+    label: String,
+    width: u32,
+    height: u32,
+}
+
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CaptureMeta {
@@ -109,10 +122,16 @@ fn build_capture_dir(session_id: &str) -> Result<PathBuf, String> {
     Ok(capture_dir)
 }
 
-fn capture_screenshot(path: &PathBuf, region: Option<&CaptureRegion>) -> Result<(), String> {
+fn capture_screenshot(
+    path: &PathBuf,
+    region: Option<&CaptureRegion>,
+    display_index: Option<u32>,
+) -> Result<(), String> {
     let mut cmd = Command::new("screencapture");
     cmd.arg("-x");
-    if let Some(r) = region {
+    if let Some(d) = display_index {
+        cmd.arg("-D").arg(d.to_string());
+    } else if let Some(r) = region {
         cmd.arg("-R")
             .arg(format!("{},{},{},{}", r.x as i32, r.y as i32, r.width as i32, r.height as i32));
     }
@@ -138,6 +157,7 @@ fn spawn_frame_sampler(
     stop_signal: Arc<AtomicBool>,
     initial_hash: u64,
     region: Option<CaptureRegion>,
+    display_index: Option<u32>,
     frame_interval_sec: u64,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
@@ -151,7 +171,7 @@ fn spawn_frame_sampler(
             }
 
             let temp_path = dir.join("frame-tmp.png");
-            if capture_screenshot(&temp_path, region.as_ref()).is_err() {
+            if capture_screenshot(&temp_path, region.as_ref(), display_index).is_err() {
                 let _ = fs::remove_file(&temp_path);
                 continue;
             }
@@ -1567,6 +1587,34 @@ fn list_audio_input_devices() -> Result<Vec<AudioInputDevice>, String> {
 }
 
 #[tauri::command]
+fn list_capture_displays(app: AppHandle) -> Result<Vec<CaptureDisplayInfo>, String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+    let monitors = window
+        .available_monitors()
+        .map_err(|e| format!("failed to list monitors: {e}"))?;
+    Ok(monitors
+        .into_iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let size = m.size();
+            let idx = (i + 1) as u32;
+            let label = m
+                .name()
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| format!("Display {}", idx));
+            CaptureDisplayInfo {
+                index: idx,
+                label,
+                width: size.width,
+                height: size.height,
+            }
+        })
+        .collect())
+}
+
+#[tauri::command]
 fn open_region_selector(app: AppHandle) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window("region-selector") {
         let _ = existing.set_focus();
@@ -1630,6 +1678,8 @@ fn cancel_region_selection(app: AppHandle) -> Result<(), String> {
 fn start_capture_session(
     options: Option<CaptureStartOptions>,
     region: Option<CaptureRegion>,
+    display_index: Option<u32>,
+    silent: Option<bool>,
     app: AppHandle,
 ) -> Result<String, String> {
     let mut store = active_capture_store()
@@ -1665,7 +1715,30 @@ fn start_capture_session(
         .max(1)
         .min(60);
 
-    capture_screenshot(&screenshot_path, region.as_ref())?;
+    let display_index = display_index.filter(|&d| d >= 1);
+    if let Some(d) = display_index {
+        let n = list_capture_displays(app.clone())?.len();
+        if n == 0 {
+            return Err("no displays detected".to_string());
+        }
+        if d as usize > n {
+            return Err(format!(
+                "display index {d} is out of range (found {n} display(s))"
+            ));
+        }
+    }
+
+    let region_for_sampler = if display_index.is_some() {
+        None
+    } else {
+        region.clone()
+    };
+
+    capture_screenshot(
+        &screenshot_path,
+        region_for_sampler.as_ref(),
+        display_index,
+    )?;
     write_capture_meta(&capture_dir, resolved_frame_interval);
     let initial_hash = hash_file(&screenshot_path)?;
     let audio_process = spawn_audio_capture(
@@ -1680,7 +1753,8 @@ fn start_capture_session(
         capture_dir.clone(),
         Arc::clone(&stop_signal),
         initial_hash,
-        region.clone(),
+        region_for_sampler.clone(),
+        display_index,
         resolved_frame_interval,
     );
 
@@ -1693,10 +1767,12 @@ fn start_capture_session(
         audio_process,
         frame_sampler_stop: stop_signal,
         frame_sampler_handle: Some(sampler_handle),
-        region,
+        region: region_for_sampler,
+        display_index,
     });
 
-    if app.get_webview_window("floating-controller").is_none() {
+    let silent = silent.unwrap_or(false);
+    if !silent && app.get_webview_window("floating-controller").is_none() {
         let _ = tauri::WebviewWindowBuilder::new(
             &app,
             "floating-controller",
@@ -1735,7 +1811,11 @@ fn stop_capture_session(app: AppHandle) -> Result<String, String> {
     }
 
     let end_shot_path = current.dir.join("screen-stop.png");
-    let _ = capture_screenshot(&end_shot_path, current.region.as_ref());
+    let _ = capture_screenshot(
+        &end_shot_path,
+        current.region.as_ref(),
+        current.display_index,
+    );
 
     println!("stop_capture_session invoked: {}", current.id);
 
@@ -2150,6 +2230,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             check_capture_prerequisites,
             list_audio_input_devices,
+            list_capture_displays,
             open_region_selector,
             close_region_selector,
             confirm_region_selection,

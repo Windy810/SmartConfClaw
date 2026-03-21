@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { currentWindowLabel } from "./lib/windowLabel";
 import { mockAcademicSession } from "./lib/mockData";
@@ -8,13 +9,14 @@ import {
   deleteSession,
   generateSessionAnalysis,
   getSessionData,
+  listCaptureDisplays,
   listCaptureSessions,
   openRegionSelector,
   startCaptureSession,
   stopCaptureSession,
   transcribeSessionAudio,
 } from "./lib/tauri";
-import type { CaptureRegion, CaptureSessionMeta } from "./lib/tauri";
+import type { CaptureDisplayInfo, CaptureRegion, CaptureSessionMeta } from "./lib/tauri";
 import { useT } from "./lib/i18n";
 import { useSettingsStore } from "./store/settingsStore";
 import { useUiStore, type NavView } from "./store/uiStore";
@@ -77,6 +79,7 @@ function MainApp(): JSX.Element {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   /** After first visit to Graph tab, keep GraphViewer mounted (hidden off-tab) so delete can refresh data. */
   const [graphViewerMounted, setGraphViewerMounted] = useState(false);
+  const [captureDisplays, setCaptureDisplays] = useState<CaptureDisplayInfo[]>([]);
   const audioInputSpecs = useSettingsStore((state) => state.audioInputSpecs);
   const audioSampleRate = useSettingsStore((state) => state.audioSampleRate);
   const audioChannels = useSettingsStore((state) => state.audioChannels);
@@ -90,6 +93,12 @@ function MainApp(): JSX.Element {
   const openRouterModel = useSettingsStore((state) => state.openRouterModel);
   const openRouterApiKey = useSettingsStore((state) => state.openRouterApiKey);
   const themeMode = useSettingsStore((state) => state.themeMode);
+  const captureSourceMode = useSettingsStore((state) => state.captureSourceMode);
+  const setCaptureSourceMode = useSettingsStore((state) => state.setCaptureSourceMode);
+  const captureDisplayIndex = useSettingsStore((state) => state.captureDisplayIndex);
+  const setCaptureDisplayIndex = useSettingsStore((state) => state.setCaptureDisplayIndex);
+  const silentCaptureMinimizeMain = useSettingsStore((state) => state.silentCaptureMinimizeMain);
+  const setSilentCaptureMinimizeMain = useSettingsStore((state) => state.setSilentCaptureMinimizeMain);
 
   useEffect(() => {
     if (activeView === "graph") {
@@ -142,15 +151,17 @@ function MainApp(): JSX.Element {
     async (region: CaptureRegion | null): Promise<void> => {
       setIsBusy(true);
       try {
-        const sessionId = await startCaptureSession(
-          {
+        const sessionId = await startCaptureSession({
+          options: {
             audioInputSpecs,
             sampleRate: audioSampleRate,
             channels: audioChannels,
             frameIntervalSec,
           },
           region,
-        );
+          displayIndex: null,
+          silent: false,
+        });
         setCurrentSessionId(sessionId);
         setIsCapturing(true);
         setCaptureMessage(`Capture started: ${sessionId}`);
@@ -162,6 +173,32 @@ function MainApp(): JSX.Element {
     },
     [audioInputSpecs, audioSampleRate, audioChannels, frameIntervalSec],
   );
+
+  const refreshCaptureDisplays = useCallback(async (): Promise<void> => {
+    try {
+      const list = await listCaptureDisplays();
+      setCaptureDisplays(list);
+    } catch (error) {
+      setCaptureMessage(`Failed to list displays: ${extractErrorMessage(error)}`);
+      setCaptureDisplays([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeView !== "capture") {
+      return;
+    }
+    void refreshCaptureDisplays();
+  }, [activeView, refreshCaptureDisplays]);
+
+  useEffect(() => {
+    if (captureDisplays.length === 0) {
+      return;
+    }
+    if (captureDisplayIndex > captureDisplays.length) {
+      setCaptureDisplayIndex(1);
+    }
+  }, [captureDisplays, captureDisplayIndex, setCaptureDisplayIndex]);
 
   const refreshSessionList = useCallback(async (): Promise<void> => {
     try {
@@ -215,6 +252,43 @@ function MainApp(): JSX.Element {
   }, [syncSessionAfterCapture]);
 
   const handleStartCapture = async (): Promise<void> => {
+    if (captureSourceMode === "display") {
+      if (captureDisplays.length === 0) {
+        setCaptureMessage(t("capture.noDisplays"));
+        void refreshCaptureDisplays();
+        return;
+      }
+      setIsBusy(true);
+      try {
+        const sessionId = await startCaptureSession({
+          options: {
+            audioInputSpecs,
+            sampleRate: audioSampleRate,
+            channels: audioChannels,
+            frameIntervalSec,
+          },
+          region: null,
+          displayIndex: captureDisplayIndex,
+          silent: true,
+        });
+        setCurrentSessionId(sessionId);
+        setIsCapturing(true);
+        setCaptureMessage(t("capture.backgroundStarted").replace("{id}", sessionId));
+        if (silentCaptureMinimizeMain) {
+          try {
+            await getCurrentWindow().minimize();
+          } catch {
+            // ignore minimize failures (e.g. web preview)
+          }
+        }
+      } catch (error) {
+        setCaptureMessage(`Failed to start capture: ${extractErrorMessage(error)}`);
+      } finally {
+        setIsBusy(false);
+      }
+      return;
+    }
+
     setIsBusy(true);
     try {
       await openRegionSelector();
@@ -421,10 +495,98 @@ function MainApp(): JSX.Element {
                           <Button variant="outline" size="sm" disabled={isBusy || !isCapturing} onClick={handleStopCapture}>
                             {t("capture.stop")}
                           </Button>
-                          <Button size="sm" disabled={isBusy || isCapturing} onClick={handleStartCapture}>
+                          <Button
+                            size="sm"
+                            disabled={
+                              isBusy ||
+                              isCapturing ||
+                              (captureSourceMode === "display" && captureDisplays.length === 0)
+                            }
+                            onClick={handleStartCapture}
+                          >
                             {t("capture.startCapture")}
                           </Button>
                         </div>
+                      </div>
+
+                      <div className="rounded-xl border border-zinc-200/80 bg-zinc-50/50 p-3 dark:border-zinc-800 dark:bg-zinc-900/40">
+                        <p className="mb-2 text-xs font-semibold text-zinc-700 dark:text-zinc-200">
+                          {t("capture.sourceMode")}
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={captureSourceMode === "display" ? "default" : "outline"}
+                            onClick={() => setCaptureSourceMode("display")}
+                          >
+                            {t("capture.sourceDisplay")}
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={captureSourceMode === "region" ? "default" : "outline"}
+                            onClick={() => setCaptureSourceMode("region")}
+                          >
+                            {t("capture.sourceRegion")}
+                          </Button>
+                        </div>
+                        <p className="mt-2 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+                          {captureSourceMode === "display"
+                            ? t("capture.sourceDisplaySub")
+                            : null}
+                        </p>
+                        {captureSourceMode === "display" ? (
+                          <div className="mt-3 space-y-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <label
+                                htmlFor="capture-display-select"
+                                className="text-xs text-zinc-600 dark:text-zinc-300"
+                              >
+                                {t("capture.selectDisplay")}
+                              </label>
+                              <select
+                                id="capture-display-select"
+                                className="min-w-[200px] rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-xs text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                                disabled={captureDisplays.length === 0}
+                                value={captureDisplays.some((d) => d.index === captureDisplayIndex) ? captureDisplayIndex : 1}
+                                onChange={(e) => setCaptureDisplayIndex(Number.parseInt(e.target.value, 10))}
+                              >
+                                {captureDisplays.length === 0 ? (
+                                  <option value={1}>—</option>
+                                ) : (
+                                  captureDisplays.map((d) => (
+                                    <option key={d.index} value={d.index}>
+                                      {d.index}: {d.label} ({d.width}×{d.height})
+                                    </option>
+                                  ))
+                                )}
+                              </select>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 text-xs"
+                                onClick={() => void refreshCaptureDisplays()}
+                              >
+                                {t("capture.refreshDisplays")}
+                              </Button>
+                            </div>
+                            <p className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+                              {t("capture.fullscreenSpaceExplainer")}
+                            </p>
+                            <p className="text-xs text-zinc-500 dark:text-zinc-400">{t("capture.silentHint")}</p>
+                            <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-700 dark:text-zinc-200">
+                              <input
+                                type="checkbox"
+                                className="h-3.5 w-3.5 rounded border-zinc-300 text-zinc-900 dark:border-zinc-600"
+                                checked={silentCaptureMinimizeMain}
+                                onChange={(e) => setSilentCaptureMinimizeMain(e.target.checked)}
+                              />
+                              {t("capture.minimizeOnStart")}
+                            </label>
+                          </div>
+                        ) : null}
                       </div>
 
                       {showSessionPicker ? (

@@ -94,6 +94,11 @@ English: Configure capture interval and related analysis behavior to match your 
 1. Install dependencies: `npm install`
 2. Start in dev mode: `npm run tauri dev`
 
+### Full-screen Space & background capture / 全屏桌面与后台捕获
+
+- **English:** On macOS, a **full-screen app** lives on its own **Space** (the extra “desktop” you see in Mission Control). The app’s **Full-screen desktop (per monitor)** mode captures a **physical monitor**—whatever pixels are **currently visible** on that screen (including that full-screen Space). It is **not** a separate API for “this Space only in the background”: if you switch to another Space on the **same** monitor, the recording shows that Space. For **slides on one screen + work on another**, use **two displays** and choose the monitor that shows the full-screen presentation.
+- **中文：** macOS 全屏应用会进入**独立桌面（Space）**，也就是调度中心里多出来的那一页。应用里的 **全屏桌面（按显示器）** 是按**物理显示器**定时截屏：录到的是该显示器**当前画面上**的内容（包括全屏时的那一页）。**不能**在系统层面单独“只录某个隐藏 Space、你却在同一屏上干别的活”；若在同一显示器上切换桌面，画面会跟着变。若需要「一屏全屏放幻灯片、另一屏做笔记」，请使用**双显示器**，并选择放演示的那一屏。
+
 ### macOS system audio (loopback) / macOS 系统内录
 
 - **English:** macOS cannot capture “what the speakers play” without a virtual loopback device. Install something like [BlackHole](https://github.com/ExistentialAudio/BlackHole), set **System Settings → Sound → Output** to BlackHole, then refresh the audio device list in **Settings** — the device appears under **System audio (loopback)** and can be mixed with your mic.

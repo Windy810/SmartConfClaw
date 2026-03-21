@@ -6,6 +6,8 @@ export type ThemeDensity = "compact" | "comfortable";
 export type ThemeMode = "light" | "dark" | "system";
 export type AppLanguage = "en" | "zh";
 export type AsrProvider = "whisper_cpp" | "openai_compatible";
+/** Region overlay selection vs whole-screen capture on a chosen display (background-friendly). */
+export type CaptureSourceMode = "region" | "display";
 
 export interface AppSettings {
   modelProvider: ModelProvider;
@@ -25,6 +27,11 @@ export interface AppSettings {
   asrLanguage: string;
   openRouterModel: string;
   openRouterApiKey: string;
+  captureSourceMode: CaptureSourceMode;
+  /** 1-based display index (matches system picker / `screencapture -D`). */
+  captureDisplayIndex: number;
+  /** Minimize main window when starting whole-display silent capture. */
+  silentCaptureMinimizeMain: boolean;
 }
 
 interface SettingsState extends AppSettings {
@@ -45,6 +52,9 @@ interface SettingsState extends AppSettings {
   setAsrLanguage: (language: string) => void;
   setOpenRouterModel: (model: string) => void;
   setOpenRouterApiKey: (apiKey: string) => void;
+  setCaptureSourceMode: (mode: CaptureSourceMode) => void;
+  setCaptureDisplayIndex: (index: number) => void;
+  setSilentCaptureMinimizeMain: (value: boolean) => void;
   resetDefaults: () => void;
 }
 
@@ -66,6 +76,9 @@ const defaultSettings: AppSettings = {
   asrLanguage: "zh",
   openRouterModel: "minimax/minimax-m2.5-chat",
   openRouterApiKey: "",
+  captureSourceMode: "region",
+  captureDisplayIndex: 1,
+  silentCaptureMinimizeMain: true,
 };
 
 export const useSettingsStore = create<SettingsState>()(
@@ -89,6 +102,12 @@ export const useSettingsStore = create<SettingsState>()(
       setAsrLanguage: (language) => set({ asrLanguage: language }),
       setOpenRouterModel: (model) => set({ openRouterModel: model }),
       setOpenRouterApiKey: (apiKey) => set({ openRouterApiKey: apiKey }),
+      setCaptureSourceMode: (mode) => set({ captureSourceMode: mode }),
+      setCaptureDisplayIndex: (index) =>
+        set({
+          captureDisplayIndex: Number.isFinite(index) && index >= 1 ? Math.floor(index) : 1,
+        }),
+      setSilentCaptureMinimizeMain: (value) => set({ silentCaptureMinimizeMain: value }),
       resetDefaults: () => set(defaultSettings),
     }),
     {
@@ -112,6 +131,9 @@ export const useSettingsStore = create<SettingsState>()(
         asrLanguage: state.asrLanguage,
         openRouterModel: state.openRouterModel,
         openRouterApiKey: state.openRouterApiKey,
+        captureSourceMode: state.captureSourceMode,
+        captureDisplayIndex: state.captureDisplayIndex,
+        silentCaptureMinimizeMain: state.silentCaptureMinimizeMain,
       }),
     },
   ),
