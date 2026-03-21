@@ -44,6 +44,10 @@ export interface GraphNode {
   label: string;
   group: "method" | "dataset" | "metric" | "author" | "concept";
   sessions?: string[];
+  /** One sentence: role of this concept in the session (from AI). */
+  summary?: string;
+  /** Short bullets for the detail panel (from AI). */
+  keyPoints?: string[];
 }
 
 export interface MindMapChild {

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { mockAcademicSession } from "./mockData";
 import type { AcademicSession, GlobalMindMapFile, KnowledgeGraph, MindMapCategory } from "../types";
+import { normalizeGraphEdge, normalizeGraphNode } from "./graphNormalize";
 
 function normalizeMindMap(raw: unknown): GlobalMindMapFile | null {
   if (raw == null) return null;
@@ -219,8 +220,8 @@ export async function getKnowledgeGraph(): Promise<KnowledgeGraph> {
       : (payload as unknown as Record<string, unknown>);
   const rawMindMap = graph.mindMap ?? graph.mind_map;
   return {
-    nodes: (graph.nodes as KnowledgeGraph["nodes"]) ?? [],
-    edges: (graph.edges as KnowledgeGraph["edges"]) ?? [],
+    nodes: Array.isArray(graph.nodes) ? graph.nodes.map(normalizeGraphNode) : [],
+    edges: Array.isArray(graph.edges) ? graph.edges.map(normalizeGraphEdge) : [],
     mindMap: normalizeMindMap(rawMindMap),
   };
 }

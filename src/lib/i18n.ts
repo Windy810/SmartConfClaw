@@ -67,6 +67,12 @@ const en = {
   "graph.group.concept": "Concepts",
   "graph.group.context": "Context",
   "graph.group.theme": "Theme",
+  "graph.clickNodeHint": "Click for details",
+  "graph.closePanel": "Close",
+  "graph.nodeSummary": "In this session",
+  "graph.noNodeSummary": "No extra summary for this node. Re-run AI analysis to refresh structured graph data.",
+  "graph.keyPoints": "Key points",
+  "graph.sourceSessions": "Sessions",
 
   // QAPanel
   "qa.drill": "Questions",
@@ -181,6 +187,12 @@ const zh: Record<string, string> = {
   "graph.group.concept": "概念",
   "graph.group.context": "背景",
   "graph.group.theme": "主题延伸",
+  "graph.clickNodeHint": "点击查看详情",
+  "graph.closePanel": "关闭",
+  "graph.nodeSummary": "在本场中的含义",
+  "graph.noNodeSummary": "暂无摘要。可重新运行 AI 分析以生成带说明的知识图谱节点。",
+  "graph.keyPoints": "要点",
+  "graph.sourceSessions": "来源会话",
 
   // QAPanel
   "qa.drill": "问题思考",
@@ -236,3 +248,5 @@ export function useT(): (key: TranslationKey) => string {
   const language = useSettingsStore((s) => s.language);
   return (key: TranslationKey) => dictionaries[language]?.[key] ?? en[key] ?? key;
 }
+
+export type TranslateFn = ReturnType<typeof useT>;

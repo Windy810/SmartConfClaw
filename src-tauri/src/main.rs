@@ -700,10 +700,16 @@ and output STRICT JSON with this exact shape:\n\
     ]\n\
   }},\n\
   \"graphNodes\": [\n\
-    {{\"id\": \"<lowercase_snake_case>\", \"label\": \"<Display Name>\", \"group\": \"<method|dataset|metric|author|concept>\"}}\n\
+    {{\n\
+      \"id\": \"<lowercase_snake_case>\",\n\
+      \"label\": \"<Display Name>\",\n\
+      \"group\": \"<method|dataset|metric|author|concept>\",\n\
+      \"summary\": \"<1 sentence: why this node matters in THIS talk>\",\n\
+      \"keyPoints\": [\"<concrete bullet from transcript/slides>\", \"<...>\"]\n\
+    }}\n\
   ],\n\
   \"graphEdges\": [\n\
-    {{\"source\": \"<node_id>\", \"target\": \"<node_id>\", \"relation\": \"<short relationship label>\"}}\n\
+    {{\"source\": \"<node_id>\", \"target\": \"<node_id>\", \"relation\": \"<specific relation, not vague 'related'>\"}}\n\
   ],\n\
   \"references\": [\n\
     {{\"title\": \"<paper or article title>\", \"authors\": \"<author names>\", \"venue\": \"<journal/conference/blog>\", \"year\": \"<year>\", \"url\": \"<link to the paper or article>\", \"relevance\": \"<1 sentence explaining why this is relevant>\"}}\n\
@@ -720,10 +726,11 @@ Mind map rules (PRIMARY — must be useful for understanding the RESEARCH FIELD,
 - Unique `id` for every category/entry/child across mindMap; labels under ~48 chars.\n\
 - Total leaf-ish nodes across the whole mindMap roughly 25–45; stay readable.\n\
 \n\
-Legacy graph (optional, keep SMALL):\n\
-- graphNodes: 0-8 nodes only if needed; may be empty [].\n\
-- graphEdges: 0-10 edges only; may be empty [].\n\
-- If you fill graphNodes, ids must be lowercase_snake_case and edges must reference valid ids.\n\
+Interactive knowledge graph (for React Flow UI — prioritize CLARITY):\n\
+- graphNodes: **6–8** nodes when the talk has enough content; otherwise fewer. Each node is a **distinct key concept** in the narrative.\n\
+- Every graphNode MUST include: `summary` (one sentence, session-specific) and `keyPoints` (2–4 short strings: facts, names, or claims from the talk — no generic filler).\n\
+- graphEdges: connect nodes that are **actually linked** in the talk (dependency, comparison, application, etc.). `relation` must be **specific** (e.g. \"uses loss\", \"trained on\", \"outperforms on\", \"extends\"), not \"related to\".\n\
+- ids: lowercase_snake_case; edges must reference valid ids. Keep the graph **readable**: avoid a hairball — prefer a clear backbone chain or hub structure.\n\
 \n\
 Other constraints:\n\
 - tags: 3-8 relevant topic tags\n\
