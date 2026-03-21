@@ -1,19 +1,32 @@
-import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useCallback, useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCapturePaused, setCapturePaused, stopCaptureSession } from "../lib/tauri";
 import { useT } from "../lib/i18n";
 
 export function FloatingController(): JSX.Element {
   const t = useT();
   const [elapsed, setElapsed] = useState(0);
   const [stopping, setStopping] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [pauseBusy, setPauseBusy] = useState(false);
 
   useEffect(() => {
+    void getCapturePaused()
+      .then(setPaused)
+      .catch(() => {
+        /* window may load before capture state exists */
+      });
+  }, []);
+
+  useEffect(() => {
+    if (paused) {
+      return;
+    }
     const interval = setInterval(() => {
       setElapsed((prev) => prev + 1);
     }, 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [paused]);
 
   const formatTime = (seconds: number): string => {
     const m = Math.floor(seconds / 60)
@@ -26,14 +39,27 @@ export function FloatingController(): JSX.Element {
   const handleStop = async () => {
     setStopping(true);
     try {
-      await invoke("stop_capture_session");
+      await stopCaptureSession();
     } catch (error) {
       console.error("Failed to stop capture:", error);
       setStopping(false);
     }
   };
 
-  const handleDrag = async (e: React.MouseEvent) => {
+  const handleTogglePause = async () => {
+    setPauseBusy(true);
+    try {
+      const next = !paused;
+      await setCapturePaused(next);
+      setPaused(next);
+    } catch (error) {
+      console.error("Failed to toggle pause:", error);
+    } finally {
+      setPauseBusy(false);
+    }
+  };
+
+  const handleDrag = useCallback(async (e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest("button")) return;
     e.preventDefault();
     try {
@@ -41,7 +67,7 @@ export function FloatingController(): JSX.Element {
     } catch {
       // ignore if not supported
     }
-  };
+  }, []);
 
   return (
     <>
@@ -50,25 +76,35 @@ export function FloatingController(): JSX.Element {
         html, body, #root { background: transparent !important; }
         @keyframes rec-pulse {
           0%, 100% { opacity: 1; }
-          50% { opacity: 0.25; }
+          50% { opacity: 0.3; }
         }
-        .float-stop-btn {
+        @keyframes paused-pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.45; }
+        }
+        .float-btn {
           position: relative;
           z-index: 2;
-          padding: 5px 18px;
-          border-radius: 8px;
+          padding: 4px 10px;
+          border-radius: 7px;
           border: none;
-          background: #ef4444;
-          color: white;
-          font-size: 12px;
+          font-size: 11px;
           font-weight: 600;
           cursor: pointer;
           font-family: inherit;
-          transition: background 0.15s;
+          transition: background 0.15s, opacity 0.15s;
         }
-        .float-stop-btn:hover { background: #dc2626; }
-        .float-stop-btn:active { background: #b91c1c; }
-        .float-stop-btn:disabled { opacity: 0.6; cursor: wait; }
+        .float-btn:disabled { opacity: 0.55; cursor: wait; }
+        .float-pause {
+          background: rgba(234, 179, 8, 0.92);
+          color: #1c1917;
+        }
+        .float-pause:hover { background: rgba(250, 204, 21, 0.95); }
+        .float-stop {
+          background: rgba(239, 68, 68, 0.92);
+          color: white;
+        }
+        .float-stop:hover { background: rgba(220, 38, 38, 0.95); }
       `}</style>
 
       <div
@@ -79,18 +115,17 @@ export function FloatingController(): JSX.Element {
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          padding: "0 16px",
-          borderRadius: 14,
-          background: "rgba(24, 24, 27, 0.88)",
-          backdropFilter: "blur(24px)",
-          WebkitBackdropFilter: "blur(24px)",
-          border: "1px solid rgba(255,255,255,0.08)",
-          boxShadow:
-            "0 8px 32px rgba(0,0,0,0.4), 0 0 0 0.5px rgba(255,255,255,0.06) inset",
+          gap: 8,
+          padding: "6px 10px",
+          borderRadius: 12,
+          background: "rgba(24, 24, 27, 0.42)",
+          backdropFilter: "blur(18px) saturate(1.2)",
+          WebkitBackdropFilter: "blur(18px) saturate(1.2)",
+          border: "1px solid rgba(255,255,255,0.12)",
+          boxShadow: "0 4px 24px rgba(0,0,0,0.25)",
           color: "white",
-          fontFamily:
-            "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif",
-          fontSize: 13,
+          fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif",
+          fontSize: 12,
           cursor: "grab",
           overflow: "hidden",
         }}
@@ -99,22 +134,24 @@ export function FloatingController(): JSX.Element {
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 8,
+            gap: 6,
             pointerEvents: "none",
+            minWidth: 0,
           }}
         >
           <div
             style={{
-              width: 8,
-              height: 8,
+              width: 7,
+              height: 7,
               borderRadius: "50%",
-              background: "#ef4444",
-              animation: "rec-pulse 1.4s ease-in-out infinite",
-              boxShadow: "0 0 6px rgba(239,68,68,0.5)",
+              flexShrink: 0,
+              background: paused ? "#eab308" : "#ef4444",
+              animation: paused ? "paused-pulse 2s ease-in-out infinite" : "rec-pulse 1.4s ease-in-out infinite",
+              boxShadow: paused ? "0 0 6px rgba(234,179,8,0.45)" : "0 0 6px rgba(239,68,68,0.45)",
             }}
           />
-          <span style={{ fontWeight: 600, fontSize: 12, letterSpacing: 0.5 }}>
-            REC
+          <span style={{ fontWeight: 600, fontSize: 11, letterSpacing: 0.4 }}>
+            {paused ? "‖" : "●"} REC
           </span>
         </div>
 
@@ -122,21 +159,28 @@ export function FloatingController(): JSX.Element {
           style={{
             fontVariantNumeric: "tabular-nums",
             fontWeight: 500,
-            fontSize: 15,
-            letterSpacing: 0.5,
+            fontSize: 13,
+            letterSpacing: 0.4,
             pointerEvents: "none",
+            opacity: paused ? 0.65 : 1,
           }}
         >
           {formatTime(elapsed)}
         </span>
 
-        <button
-          className="float-stop-btn"
-          disabled={stopping}
-          onClick={handleStop}
-        >
-          {stopping ? "..." : t("float.stop")}
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+          <button
+            type="button"
+            className="float-btn float-pause"
+            disabled={pauseBusy}
+            onClick={() => void handleTogglePause()}
+          >
+            {pauseBusy ? "…" : paused ? t("float.resume") : t("float.pause")}
+          </button>
+          <button type="button" className="float-btn float-stop" disabled={stopping} onClick={() => void handleStop()}>
+            {stopping ? "…" : t("float.stop")}
+          </button>
+        </div>
       </div>
     </>
   );

@@ -211,6 +211,20 @@ export async function stopCaptureSession(): Promise<string> {
   return invoke<string>("stop_capture_session");
 }
 
+export async function setCapturePaused(paused: boolean): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  return invoke<void>("set_capture_paused", { paused });
+}
+
+export async function getCapturePaused(): Promise<boolean> {
+  if (!isTauriRuntime()) {
+    return false;
+  }
+  return invoke<boolean>("get_capture_paused");
+}
+
 export interface CaptureSessionMeta {
   id: string;
   hasAudio: boolean;

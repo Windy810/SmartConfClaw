@@ -94,6 +94,11 @@ English: Configure capture interval and related analysis behavior to match your 
 1. Install dependencies: `npm install`
 2. Start in dev mode: `npm run tauri dev`
 
+### Floating controller / 悬浮控制条
+
+- **English:** While recording, a small **transparent** bar stays **on top** and **on all desktops** (Mission Control spaces). **Pause** freezes both screenshot sampling and (on macOS/Linux) the ffmpeg audio process; **Resume** continues; **Stop** ends the session.
+- **中文：** 录制时会有**半透明**小条**置顶**，并勾选 **在所有桌面上显示**（切换调度中心桌面仍可见）。**暂停**会停止定时截屏，并在 macOS/Linux 上对 ffmpeg 录音进程发送暂停信号；**继续**恢复；**停止**结束会话。
+
 ### Full-screen Space & background capture / 全屏桌面与后台捕获
 
 - **English:** On macOS, a **full-screen app** lives on its own **Space** (the extra “desktop” you see in Mission Control). The app’s **Full-screen desktop (per monitor)** mode captures a **physical monitor**—whatever pixels are **currently visible** on that screen (including that full-screen Space). It is **not** a separate API for “this Space only in the background”: if you switch to another Space on the **same** monitor, the recording shows that Space. For **slides on one screen + work on another**, use **two displays** and choose the monitor that shows the full-screen presentation.

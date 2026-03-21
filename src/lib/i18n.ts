@@ -29,7 +29,7 @@ const en = {
   "capture.selectDisplay": "Display",
   "capture.refreshDisplays": "Refresh",
   "capture.silentHint":
-    "No floating REC bar; stop from this window. macOS may show the screen-recording indicator in the menu bar.",
+    "A compact floating bar stays on top (all desktops); use Pause/Stop there. macOS may show the screen-recording indicator.",
   "capture.fullscreenSpaceExplainer":
     "On macOS, a full-screen app uses a separate Space (Mission Control “desktop”). This mode records the monitor’s current pixels each interval—so stay on the Space you want, or use a second monitor for slides while you work on the other screen. Switching Spaces on the same monitor changes what is recorded.",
   "capture.minimizeOnStart": "Minimize app when capture starts",
@@ -97,6 +97,8 @@ const en = {
 
   // FloatingController
   "float.stop": "Stop",
+  "float.pause": "Pause",
+  "float.resume": "Resume",
 
   // RegionSelector
   "region.dragHint": "Drag to select capture region",
@@ -179,7 +181,7 @@ const zh: Record<string, string> = {
   "capture.selectDisplay": "显示器",
   "capture.refreshDisplays": "刷新",
   "capture.silentHint":
-    "不显示置顶悬浮录制条，请在本窗口点击「停止」。macOS 可能在菜单栏显示录屏指示。",
+    "顶部会保留小型悬浮条（可跨桌面），可用暂停/停止。macOS 可能在菜单栏显示录屏指示。",
   "capture.fullscreenSpaceExplainer":
     "macOS 进入全屏后会有独立「桌面」（调度中心里多出来的那一页）。本模式按固定间隔截取**整块物理显示器**的当前画面：请先切到要录的全屏/桌面再点开始；若在同一块屏上切换到别的桌面，画面会跟着变。若希望一边录全屏幻灯片、一边在本机做别的事，建议使用**双屏**（一屏放全屏演示、另一屏办公）。",
   "capture.minimizeOnStart": "开始捕获时最小化主窗口",
@@ -247,6 +249,8 @@ const zh: Record<string, string> = {
 
   // FloatingController
   "float.stop": "停止",
+  "float.pause": "暂停",
+  "float.resume": "继续",
 
   // RegionSelector
   "region.dragHint": "拖拽鼠标选择截屏区域",

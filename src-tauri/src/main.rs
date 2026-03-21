@@ -26,6 +26,8 @@ struct ActiveCapture {
     audio_process: Option<Child>,
     frame_sampler_stop: Arc<AtomicBool>,
     frame_sampler_handle: Option<JoinHandle<()>>,
+    /// When true, frame sampler sleeps and (on Unix) audio ffmpeg is SIGSTOP’d.
+    pause_signal: Arc<AtomicBool>,
     region: Option<CaptureRegion>,
     /// 1-based index for `screencapture -D` (whole display). When set, region rects are ignored for capture.
     display_index: Option<u32>,
@@ -102,6 +104,68 @@ fn last_capture_store() -> &'static Mutex<Option<CompletedCapture>> {
     LAST_CAPTURE.get_or_init(|| Mutex::new(None))
 }
 
+fn position_floating_window(app: &AppHandle, win: &tauri::WebviewWindow) {
+    let Ok(Some(monitor)) = app.primary_monitor() else {
+        return;
+    };
+    let size = monitor.size();
+    let scale = monitor.scale_factor();
+    let screen_w = size.width as f64 / scale;
+    let float_w = 280.0;
+    let margin_x = 14.0;
+    let margin_y = 36.0;
+    let x = (screen_w - float_w - margin_x).max(8.0);
+    let _ = win.set_position(tauri::LogicalPosition::new(x, margin_y));
+}
+
+fn signal_audio_process(child: &mut Child, pause: bool) {
+    #[cfg(unix)]
+    {
+        let pid = child.id();
+        if pid == 0 {
+            return;
+        }
+        unsafe {
+            let sig = if pause {
+                libc::SIGSTOP
+            } else {
+                libc::SIGCONT
+            };
+            let _ = libc::kill(pid as i32, sig);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (child, pause);
+    }
+}
+
+#[tauri::command]
+fn set_capture_paused(paused: bool) -> Result<(), String> {
+    let mut store = active_capture_store()
+        .lock()
+        .map_err(|_| "failed to lock capture state".to_string())?;
+    let cap = store
+        .as_mut()
+        .ok_or_else(|| "no active capture".to_string())?;
+    cap.pause_signal.store(paused, Ordering::Relaxed);
+    if let Some(ref mut child) = cap.audio_process {
+        signal_audio_process(child, paused);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_capture_paused() -> Result<bool, String> {
+    let store = active_capture_store()
+        .lock()
+        .map_err(|_| "failed to lock capture state".to_string())?;
+    let cap = store
+        .as_ref()
+        .ok_or_else(|| "no active capture".to_string())?;
+    Ok(cap.pause_signal.load(Ordering::Relaxed))
+}
+
 fn current_unix_timestamp() -> Result<u64, String> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -155,6 +219,7 @@ fn hash_file(path: &PathBuf) -> Result<u64, String> {
 fn spawn_frame_sampler(
     dir: PathBuf,
     stop_signal: Arc<AtomicBool>,
+    pause_signal: Arc<AtomicBool>,
     initial_hash: u64,
     region: Option<CaptureRegion>,
     display_index: Option<u32>,
@@ -165,6 +230,19 @@ fn spawn_frame_sampler(
         let mut last_hash: u64 = initial_hash;
 
         loop {
+            if stop_signal.load(Ordering::Relaxed) {
+                break;
+            }
+            while pause_signal.load(Ordering::Relaxed) {
+                thread::sleep(Duration::from_millis(120));
+                if stop_signal.load(Ordering::Relaxed) {
+                    break;
+                }
+            }
+            if stop_signal.load(Ordering::Relaxed) {
+                break;
+            }
+
             thread::sleep(Duration::from_secs(frame_interval_sec.max(1)));
             if stop_signal.load(Ordering::Relaxed) {
                 break;
@@ -1749,9 +1827,11 @@ fn start_capture_session(
         resolved_channels,
     )?;
     let stop_signal = Arc::new(AtomicBool::new(false));
+    let pause_signal = Arc::new(AtomicBool::new(false));
     let sampler_handle = spawn_frame_sampler(
         capture_dir.clone(),
         Arc::clone(&stop_signal),
+        Arc::clone(&pause_signal),
         initial_hash,
         region_for_sampler.clone(),
         display_index,
@@ -1767,13 +1847,14 @@ fn start_capture_session(
         audio_process,
         frame_sampler_stop: stop_signal,
         frame_sampler_handle: Some(sampler_handle),
+        pause_signal,
         region: region_for_sampler,
         display_index,
     });
 
-    let silent = silent.unwrap_or(false);
-    if !silent && app.get_webview_window("floating-controller").is_none() {
-        let _ = tauri::WebviewWindowBuilder::new(
+    let _ = silent;
+    if app.get_webview_window("floating-controller").is_none() {
+        match tauri::WebviewWindowBuilder::new(
             &app,
             "floating-controller",
             tauri::WebviewUrl::App("index.html".into()),
@@ -1782,9 +1863,16 @@ fn start_capture_session(
         .decorations(false)
         .transparent(true)
         .always_on_top(true)
-        .inner_size(300.0, 64.0)
+        .visible_on_all_workspaces(true)
+        .inner_size(280.0, 48.0)
         .resizable(false)
-        .build();
+        .build()
+        {
+            Ok(win) => {
+                position_floating_window(&app, &win);
+            }
+            Err(e) => println!("Warning: floating controller window: {e}"),
+        }
     }
 
     Ok(session_id)
@@ -2237,6 +2325,8 @@ fn main() {
             cancel_region_selection,
             start_capture_session,
             stop_capture_session,
+            set_capture_paused,
+            get_capture_paused,
             transcribe_session_audio,
             generate_session_analysis,
             get_session_data,
