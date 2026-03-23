@@ -10,7 +10,7 @@
 
 SmartConf Claw is a desktop AI assistant for online academic conferences. It lets you select a screen region, captures presentation content, transcribes audio (ASR), then generates structured summaries, key concepts, knowledge graphs, and PhD-style Q&A practice.
 
-智会虾（SmartConf Claw）是一个面向线上学术会议的桌面端 AI 助手。你只需要选择屏幕区域，它会捕获演示内容、完成语音转写（ASR），并自动生成结构化总结、关键概念、知识图谱以及博士面试/答辩风格的问答训练题。
+智会虾（SmartConf Claw）是一个全流程会议托管助手。你只需要选择屏幕区域，它会捕获演示内容、完成语音转写（ASR），并自动生成结构化总结、关键概念、知识图谱以及博士面试/答辩风格的问答训练题。
 
 ## Demo Video / 演示视频
 
@@ -25,7 +25,9 @@ SmartConf Claw is a desktop AI assistant for online academic conferences. It let
 
 ### Meeting Capture / 会议捕获
 
-![Meeting Capture](doc/fig/Meeting%20Capture.png)
+![Meeting Capture](doc/gif/capture.gif)
+
+![AI Analysis](doc/gif/Transcribe.gif)
 
 中文：选择截屏区域后自动捕获 PPT 画面，并与音频转写进行时间对齐。
 
@@ -33,7 +35,7 @@ English: After selecting a region, it captures presentation slides and aligns th
 
 ### AI Analysis / AI 分析
 
-![AI Analysis](doc/fig/AI%20Analysis.png)
+![AI Analysis](doc/gif/ai%20analysis.gif)
 
 中文：基于转写文本 + 截图进行总结、概念解析、标签抽取与结构化输出。
 
@@ -49,7 +51,7 @@ English: Automatically compile related papers/articles based on the session for 
 
 ### Knowledge Graph / 知识图谱
 
-![Knowledge Graph](doc/fig/Knowledge%20Graph.png)
+![Knowledge Graph](doc/gif/knowledge%20graph.gif)
 
 中文：把跨会话的内容要素（方法、数据集、指标、作者等）抽取并可视化为可点击知识图谱。
 
@@ -65,7 +67,9 @@ English: Turn passive listening into active practice with PhD-style questions an
 
 ### Flexible Settings / 灵活设置
 
-![Flexible Settings](doc/fig/Flexible%20Settings.png)
+![Flexible Settings](doc/gif/setting.gif)
+
+![Flexible Settings1](doc/fig/Flexible%20Settings.png)
 
 中文：可配置截屏频率、转写与分析相关行为，让捕获更贴合你的会议节奏。
 
