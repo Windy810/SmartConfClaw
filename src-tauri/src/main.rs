@@ -19,6 +19,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+mod bot_endpoint;
+
 struct ActiveCapture {
     id: String,
     dir: PathBuf,
@@ -60,7 +62,7 @@ struct AudioInputDevice {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CaptureStartOptions {
+pub(crate) struct CaptureStartOptions {
     audio_input_specs: Vec<String>,
     sample_rate: Option<u32>,
     channels: Option<u8>,
@@ -69,7 +71,7 @@ struct CaptureStartOptions {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CaptureRegion {
+pub(crate) struct CaptureRegion {
     x: f64,
     y: f64,
     width: f64,
@@ -1752,13 +1754,12 @@ fn cancel_region_selection(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn start_capture_session(
+pub(crate) fn start_capture_session_inner(
+    app: AppHandle,
     options: Option<CaptureStartOptions>,
     region: Option<CaptureRegion>,
     display_index: Option<u32>,
     silent: Option<bool>,
-    app: AppHandle,
 ) -> Result<String, String> {
     let mut store = active_capture_store()
         .lock()
@@ -1876,6 +1877,17 @@ fn start_capture_session(
     }
 
     Ok(session_id)
+}
+
+#[tauri::command]
+fn start_capture_session(
+    options: Option<CaptureStartOptions>,
+    region: Option<CaptureRegion>,
+    display_index: Option<u32>,
+    silent: Option<bool>,
+    app: AppHandle,
+) -> Result<String, String> {
+    start_capture_session_inner(app, options, region, display_index, silent)
 }
 
 #[tauri::command]
@@ -2312,9 +2324,65 @@ fn get_all_sessions() -> String {
     fs::read_to_string(&index_path).unwrap_or_else(|_| "[]".to_string())
 }
 
+#[tauri::command]
+fn sync_bot_capture_prefs(prefs: bot_endpoint::BotCapturePrefs) -> Result<(), String> {
+    bot_endpoint::sync_bot_capture_prefs_file(&prefs)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetBotEndpointArgs {
+    enabled: bool,
+    port: u16,
+    /// When `None`, keep the existing secret on disk. When `Some("")`, clear. Otherwise replace.
+    secret: Option<String>,
+}
+
+#[tauri::command]
+fn set_bot_endpoint_config(args: SetBotEndpointArgs, app: AppHandle) -> Result<(), String> {
+    if !(1024..=65535).contains(&args.port) {
+        return Err("port must be between 1024 and 65535".to_string());
+    }
+    let mut cfg = bot_endpoint::load_bot_config();
+    cfg.enabled = args.enabled;
+    cfg.port = args.port;
+    if let Some(s) = args.secret {
+        cfg.secret = s;
+    }
+    bot_endpoint::save_bot_config(&cfg)?;
+    if cfg.enabled {
+        bot_endpoint::start_bot_http_server(app)?;
+    } else {
+        bot_endpoint::stop_bot_http_server();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_bot_endpoint_status() -> String {
+    let c = bot_endpoint::load_bot_config();
+    let listening = bot_endpoint::is_bot_server_running();
+    let base = bot_endpoint::bot_endpoint_base_url();
+    json!({
+        "enabled": c.enabled,
+        "port": c.port,
+        "listening": listening,
+        "baseUrl": base,
+        "secretConfigured": !c.secret.trim().is_empty(),
+    })
+    .to_string()
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let handle = app.handle().clone();
+            if let Err(e) = bot_endpoint::start_bot_http_server(handle) {
+                eprintln!("ScholarClaw bot endpoint startup: {e}");
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             check_capture_prerequisites,
             list_audio_input_devices,
@@ -2333,7 +2401,10 @@ fn main() {
             list_capture_sessions,
             get_knowledge_graph,
             get_all_sessions,
-            delete_session
+            delete_session,
+            sync_bot_capture_prefs,
+            set_bot_endpoint_config,
+            get_bot_endpoint_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

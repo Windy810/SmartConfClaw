@@ -9,11 +9,13 @@ import {
   deleteSession,
   generateSessionAnalysis,
   getSessionData,
+  isTauriRuntime,
   listCaptureDisplays,
   listCaptureSessions,
   openRegionSelector,
   startCaptureSession,
   stopCaptureSession,
+  syncBotCapturePrefs,
   transcribeSessionAudio,
 } from "./lib/tauri";
 import type { CaptureDisplayInfo, CaptureRegion, CaptureSessionMeta } from "./lib/tauri";
@@ -145,6 +147,27 @@ function MainApp(): JSX.Element {
     void loadPrerequisites();
   }, []);
 
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    void syncBotCapturePrefs({
+      audioInputSpecs,
+      sampleRate: audioSampleRate,
+      channels: audioChannels,
+      frameIntervalSec,
+      captureDisplayIndex,
+      silentCaptureMinimizeMain,
+    });
+  }, [
+    audioInputSpecs,
+    audioSampleRate,
+    audioChannels,
+    frameIntervalSec,
+    captureDisplayIndex,
+    silentCaptureMinimizeMain,
+  ]);
+
   const doStartCaptureRef = useRef<(region: CaptureRegion | null) => Promise<void>>();
 
   doStartCaptureRef.current = useCallback(
@@ -228,6 +251,7 @@ function MainApp(): JSX.Element {
     let unlistenConfirmed: (() => void) | undefined;
     let unlistenCancelled: (() => void) | undefined;
     let unlistenStopped: (() => void) | undefined;
+    let unlistenBot: (() => void) | undefined;
 
     const setup = async () => {
       unlistenConfirmed = await listen<CaptureRegion | null>("region-confirmed", (event) => {
@@ -241,6 +265,11 @@ function MainApp(): JSX.Element {
         setIsCapturing(false);
         void syncSessionAfterCapture(event.payload);
       });
+      unlistenBot = await listen<{ sessionId: string }>("bot-capture-started", (event) => {
+        setCurrentSessionId(event.payload.sessionId);
+        setIsCapturing(true);
+        setCaptureMessage(t("capture.botStarted").replace("{id}", event.payload.sessionId));
+      });
     };
 
     void setup();
@@ -248,8 +277,9 @@ function MainApp(): JSX.Element {
       unlistenConfirmed?.();
       unlistenCancelled?.();
       unlistenStopped?.();
+      unlistenBot?.();
     };
-  }, [syncSessionAfterCapture]);
+  }, [syncSessionAfterCapture, t]);
 
   const handleStartCapture = async (): Promise<void> => {
     if (captureSourceMode === "display") {

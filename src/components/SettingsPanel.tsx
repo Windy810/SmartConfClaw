@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useT } from "../lib/i18n";
-import { listAudioInputDevices, pickScreenshotDirectory, type AudioInputDevice } from "../lib/tauri";
+import {
+  getBotEndpointStatus,
+  listAudioInputDevices,
+  pickScreenshotDirectory,
+  setBotEndpointConfig,
+  type AudioInputDevice,
+} from "../lib/tauri";
 import {
   useSettingsStore,
   type AppLanguage,
@@ -90,6 +96,16 @@ export function SettingsPanel(): JSX.Element {
   const [audioDevices, setAudioDevices] = useState<AudioInputDevice[]>([]);
   const [audioListError, setAudioListError] = useState<string | null>(null);
 
+  const [botEnabled, setBotEnabled] = useState(false);
+  const [botPortDraft, setBotPortDraft] = useState("18765");
+  const [botSecretDraft, setBotSecretDraft] = useState("");
+  const [botSecretTouched, setBotSecretTouched] = useState(false);
+  const [botSecretConfigured, setBotSecretConfigured] = useState(false);
+  const [botListening, setBotListening] = useState(false);
+  const [botBaseUrl, setBotBaseUrl] = useState("http://127.0.0.1:18765");
+  const [botLoadError, setBotLoadError] = useState<string | null>(null);
+  const [botSaveMessage, setBotSaveMessage] = useState<string | null>(null);
+
   const loadDevices = useCallback(async (): Promise<void> => {
     setAudioListError(null);
     try {
@@ -110,6 +126,28 @@ export function SettingsPanel(): JSX.Element {
   useEffect(() => {
     void loadDevices();
   }, [loadDevices]);
+
+  useEffect(() => {
+    void (async () => {
+      setBotLoadError(null);
+      try {
+        const s = await getBotEndpointStatus();
+        setBotEnabled(s.enabled);
+        setBotPortDraft(String(s.port));
+        setBotListening(s.listening);
+        setBotBaseUrl(s.baseUrl);
+        setBotSecretConfigured(s.secretConfigured);
+      } catch (error) {
+        const msg =
+          error instanceof Error
+            ? error.message
+            : typeof error === "string"
+              ? error
+              : "Unknown error";
+        setBotLoadError(msg);
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     setDraftSelectedSpecs([...audioInputSpecs]);
@@ -147,6 +185,37 @@ export function SettingsPanel(): JSX.Element {
 
   const inputCls =
     "w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700 outline-none ring-zinc-300 transition focus:ring-2 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:ring-zinc-600";
+
+  const handleSaveBotEndpoint = useCallback(async (): Promise<void> => {
+    setBotSaveMessage(null);
+    const port = Math.max(1024, Math.min(65535, Number.parseInt(botPortDraft, 10) || 18765));
+    try {
+      await setBotEndpointConfig({
+        enabled: botEnabled,
+        port,
+        secret: botSecretTouched ? botSecretDraft : undefined,
+      });
+      setBotSecretTouched(false);
+      setBotSecretDraft("");
+      const s = await getBotEndpointStatus();
+      setBotListening(s.listening);
+      setBotBaseUrl(s.baseUrl);
+      setBotSecretConfigured(s.secretConfigured);
+      setBotSaveMessage("OK");
+    } catch (error) {
+      const msg =
+        error instanceof Error
+          ? error.message
+          : typeof error === "string"
+            ? error
+            : "Unknown error";
+      setBotSaveMessage(msg);
+    }
+  }, [botEnabled, botPortDraft, botSecretDraft, botSecretTouched]);
+
+  const curlExample = `curl -sS -X POST '${botBaseUrl}/v1/meeting' \\
+  -H 'Content-Type: application/json' \\
+  -d '{"meetingUrl":"https://example.com/your-meeting-link"}'`;
 
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
@@ -563,6 +632,85 @@ export function SettingsPanel(): JSX.Element {
               {t("settings.saveOpenRouterConfig")}
             </Button>
             <Badge variant="secondary">{t("settings.storedLocally")}</Badge>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="xl:col-span-2">
+        <CardHeader>
+          <CardTitle className="text-lg">{t("settings.botEndpoint")}</CardTitle>
+          <CardDescription>{t("settings.botEndpointDesc")}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {botLoadError ? (
+            <p className="rounded-lg border border-red-200/90 bg-red-50 px-3 py-2 text-xs text-red-900 dark:border-red-900/50 dark:bg-red-950/50 dark:text-red-100">
+              {botLoadError}
+            </p>
+          ) : null}
+          <label className="flex cursor-pointer items-start gap-2.5">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 shrink-0 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-400 dark:border-zinc-600 dark:bg-zinc-900"
+              checked={botEnabled}
+              onChange={(e) => setBotEnabled(e.target.checked)}
+            />
+            <span className="text-sm font-medium text-zinc-800 dark:text-zinc-100">{t("settings.botEndpointEnable")}</span>
+          </label>
+          <div className="grid gap-3 sm:grid-cols-[140px_1fr] sm:items-center">
+            <label htmlFor="bot-port" className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
+              {t("settings.botEndpointPort")}
+            </label>
+            <input
+              id="bot-port"
+              type="number"
+              min={1024}
+              max={65535}
+              value={botPortDraft}
+              onChange={(e) => setBotPortDraft(e.target.value)}
+              className={inputCls}
+            />
+          </div>
+          <div className="space-y-2">
+            <label htmlFor="bot-secret" className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
+              {t("settings.botEndpointSecret")}
+            </label>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">{t("settings.botEndpointSecretHint")}</p>
+            <input
+              id="bot-secret"
+              type="password"
+              autoComplete="off"
+              value={botSecretDraft}
+              onChange={(e) => {
+                setBotSecretTouched(true);
+                setBotSecretDraft(e.target.value);
+              }}
+              onFocus={() => setBotSecretTouched(true)}
+              className={inputCls}
+              placeholder={botSecretConfigured ? "••••••••" : ""}
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" size="sm" variant="default" onClick={() => void handleSaveBotEndpoint()}>
+              {t("settings.botEndpointSave")}
+            </Button>
+            <Badge variant={botListening ? "default" : "secondary"}>
+              {botListening ? t("settings.botEndpointListening") : t("settings.botEndpointIdle")}
+            </Badge>
+            {botSaveMessage ? (
+              <span className="text-xs text-zinc-600 dark:text-zinc-400">{botSaveMessage}</span>
+            ) : null}
+          </div>
+          <div className="space-y-1 border-t border-zinc-200/80 pt-4 dark:border-zinc-800">
+            <p className="text-xs font-medium text-zinc-600 dark:text-zinc-300">{t("settings.botEndpointUrl")}</p>
+            <code className="block break-all rounded-md bg-zinc-100 px-2 py-1.5 font-mono text-xs text-zinc-800 dark:bg-zinc-900 dark:text-zinc-200">
+              {botBaseUrl}/v1/meeting
+            </code>
+          </div>
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-zinc-600 dark:text-zinc-300">{t("settings.botEndpointExample")}</p>
+            <pre className="max-h-40 overflow-x-auto overflow-y-auto rounded-md bg-zinc-950 px-3 py-2 font-mono text-[11px] leading-relaxed text-zinc-100">
+              {curlExample}
+            </pre>
           </div>
         </CardContent>
       </Card>

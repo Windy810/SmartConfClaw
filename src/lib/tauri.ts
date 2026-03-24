@@ -68,7 +68,7 @@ export interface TranscribeOptions {
   language: string;
 }
 
-function isTauriRuntime(): boolean {
+export function isTauriRuntime(): boolean {
   if (typeof window === "undefined") {
     return false;
   }
@@ -328,4 +328,66 @@ export async function deleteSession(
     id,
     screenshotsRoot: options?.screenshotsRoot ?? null,
   });
+}
+
+/** Written to disk for the local bot HTTP handler so POST /v1/meeting uses current capture prefs. */
+export interface BotCapturePrefsPayload {
+  audioInputSpecs: string[];
+  sampleRate: number;
+  channels: number;
+  frameIntervalSec: number;
+  captureDisplayIndex: number;
+  silentCaptureMinimizeMain: boolean;
+}
+
+export async function syncBotCapturePrefs(prefs: BotCapturePrefsPayload): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  return invoke<void>("sync_bot_capture_prefs", { prefs });
+}
+
+export interface BotEndpointStatus {
+  enabled: boolean;
+  port: number;
+  listening: boolean;
+  baseUrl: string;
+  secretConfigured: boolean;
+}
+
+export async function getBotEndpointStatus(): Promise<BotEndpointStatus> {
+  if (!isTauriRuntime()) {
+    return {
+      enabled: false,
+      port: 18765,
+      listening: false,
+      baseUrl: "http://127.0.0.1:18765",
+      secretConfigured: false,
+    };
+  }
+  const raw = await invoke<string>("get_bot_endpoint_status");
+  return JSON.parse(raw) as BotEndpointStatus;
+}
+
+export async function setBotEndpointConfig(args: {
+  enabled: boolean;
+  port: number;
+  /** When set, updates the shared secret. Omit to keep the existing secret. */
+  secret?: string;
+}): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+  const payload: {
+    args: { enabled: boolean; port: number; secret?: string };
+  } = {
+    args: {
+      enabled: args.enabled,
+      port: args.port,
+    },
+  };
+  if (args.secret !== undefined) {
+    payload.args.secret = args.secret;
+  }
+  return invoke<void>("set_bot_endpoint_config", payload);
 }

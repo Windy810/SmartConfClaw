@@ -34,6 +34,7 @@ const en = {
     "On macOS, a full-screen app uses a separate Space (Mission Control “desktop”). This mode records the monitor’s current pixels each interval—so stay on the Space you want, or use a second monitor for slides while you work on the other screen. Switching Spaces on the same monitor changes what is recorded.",
   "capture.minimizeOnStart": "Minimize app when capture starts",
   "capture.backgroundStarted": "Background capture started: {id}",
+  "capture.botStarted": "Capture started from bot: {id}",
   "capture.noDisplays": "No displays found. Click Refresh or check Screen Recording permission.",
 
   // Session picker
@@ -150,6 +151,19 @@ const en = {
   "settings.saveOpenRouterConfig": "Save OpenRouter Config",
   "settings.storedLocally": "Stored locally for prototype",
   "settings.persistentZustand": "Persistent via Zustand",
+  "settings.botEndpoint": "Bot / automation hook",
+  "settings.botEndpointDesc":
+    "Local HTTP API on this machine. Send a meeting link (Zoom, Teams, Meet, Webex, etc.); the app opens it in the default browser or client and starts full-display capture using your current audio/frame settings above.",
+  "settings.botEndpointEnable": "Enable localhost listener",
+  "settings.botEndpointPort": "Port",
+  "settings.botEndpointSecret": "Shared secret (optional)",
+  "settings.botEndpointSecretHint":
+    "If set, requests must include this value in the JSON body as \"secret\" or Authorization: Bearer … Leave blank when saving to keep the existing secret; type a new value to replace; clear and save to remove.",
+  "settings.botEndpointSave": "Save bot endpoint",
+  "settings.botEndpointListening": "Listening",
+  "settings.botEndpointIdle": "Stopped",
+  "settings.botEndpointUrl": "POST endpoint",
+  "settings.botEndpointExample": "Example (curl)",
 } as const;
 
 const zh: Record<string, string> = {
@@ -186,6 +200,7 @@ const zh: Record<string, string> = {
     "macOS 进入全屏后会有独立「桌面」（调度中心里多出来的那一页）。本模式按固定间隔截取**整块物理显示器**的当前画面：请先切到要录的全屏/桌面再点开始；若在同一块屏上切换到别的桌面，画面会跟着变。若希望一边录全屏幻灯片、一边在本机做别的事，建议使用**双屏**（一屏放全屏演示、另一屏办公）。",
   "capture.minimizeOnStart": "开始捕获时最小化主窗口",
   "capture.backgroundStarted": "后台捕获已开始：{id}",
+  "capture.botStarted": "已通过机器人开始捕获：{id}",
   "capture.noDisplays": "未检测到显示器，请点击刷新或检查「屏幕录制」权限。",
 
   // Session picker
@@ -301,6 +316,19 @@ const zh: Record<string, string> = {
   "settings.saveOpenRouterConfig": "保存 OpenRouter 配置",
   "settings.storedLocally": "原型阶段，本地存储",
   "settings.persistentZustand": "通过 Zustand 持久化",
+  "settings.botEndpoint": "机器人 / 自动化接入",
+  "settings.botEndpointDesc":
+    "本机 HTTP 服务。把会议链接（Zoom、Teams、Meet、Webex 等）POST 过来后，应用会用系统默认浏览器或客户端打开会议并开始按显示器全屏捕获（音频与截图间隔使用你在上方保存的「捕获」配置）。",
+  "settings.botEndpointEnable": "启用本机监听",
+  "settings.botEndpointPort": "端口",
+  "settings.botEndpointSecret": "共享密钥（可选）",
+  "settings.botEndpointSecretHint":
+    "若填写，则请求需在 JSON 中携带 \"secret\" 字段，或使用 Authorization: Bearer。保存时留空表示不修改已有密钥；填写新值表示替换；清空后保存可删除密钥。",
+  "settings.botEndpointSave": "保存接入点配置",
+  "settings.botEndpointListening": "监听中",
+  "settings.botEndpointIdle": "未监听",
+  "settings.botEndpointUrl": "POST 地址",
+  "settings.botEndpointExample": "示例（curl）",
 };
 
 type TranslationKey = keyof typeof en;
