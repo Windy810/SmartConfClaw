@@ -364,9 +364,9 @@ export function SettingsPanel(): JSX.Element {
 
 					<div className="space-y-2 border-t border-zinc-200/80 pt-4 dark:border-zinc-800">
 						<div className="flex flex-wrap items-center justify-between gap-2">
-							<label className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
+							<span className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
 								{t("settings.audioInputs")}
-							</label>
+							</span>
 							<Button
 								type="button"
 								size="sm"

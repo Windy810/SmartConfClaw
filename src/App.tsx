@@ -822,9 +822,9 @@ function MainApp(): JSX.Element {
 																				<div className="mt-0.5 flex w-full min-w-0 flex-wrap gap-1.5">
 																					{s.tags
 																						.slice(0, 6)
-																						.map((tag: string, i: number) => (
+																						.map((tag: string) => (
 																							<Badge
-																								key={`${tag}-${i}`}
+																								key={tag}
 																								variant="secondary"
 																								className="h-auto min-h-5 w-fit max-w-full shrink px-2 py-0.5 text-left text-[10px] leading-snug text-zinc-700 whitespace-normal break-words dark:text-zinc-200"
 																							>

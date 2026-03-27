@@ -63,15 +63,32 @@ export function FloatingController(): JSX.Element {
 		}
 	};
 
-	const handleDrag = useCallback(async (e: React.MouseEvent) => {
-		if ((e.target as HTMLElement).closest("button")) return;
-		e.preventDefault();
+	const startWindowDrag = useCallback(async () => {
 		try {
 			await getCurrentWindow().startDragging();
 		} catch {
 			// ignore if not supported
 		}
 	}, []);
+
+	const handleDrag = useCallback(
+		async (e: React.MouseEvent) => {
+			if ((e.target as HTMLElement).closest("button")) return;
+			e.preventDefault();
+			await startWindowDrag();
+		},
+		[startWindowDrag],
+	);
+
+	const handleDragKeyDown = useCallback(
+		(e: React.KeyboardEvent) => {
+			if (e.key === "Enter" || e.key === " ") {
+				e.preventDefault();
+				void startWindowDrag();
+			}
+		},
+		[startWindowDrag],
+	);
 
 	return (
 		<>
@@ -111,8 +128,13 @@ export function FloatingController(): JSX.Element {
         .float-stop:hover { background: rgba(220, 38, 38, 0.95); }
       `}</style>
 
+			{/* biome-ignore lint/a11y/useSemanticElements: cannot nest inner Pause/Stop <button> inside an outer <button> */}
 			<div
+				role="button"
+				tabIndex={0}
+				aria-label={t("float.dragHandle")}
 				onMouseDown={handleDrag}
+				onKeyDown={handleDragKeyDown}
 				style={{
 					width: "100%",
 					height: "100%",

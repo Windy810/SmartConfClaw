@@ -36,12 +36,13 @@ function FitViewOnLayoutChange(props: {
 	const { layoutSig, refreshKey } = props;
 	const { fitView } = useReactFlow();
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: layoutSig and refreshKey trigger refit when graph layout or parent refresh changes
 	useEffect(() => {
 		const id = window.setTimeout(() => {
 			void fitView({ padding: 0.18, duration: 220 });
 		}, 90);
 		return () => window.clearTimeout(id);
-	}, [fitView]);
+	}, [fitView, layoutSig, refreshKey]);
 
 	return null;
 }
@@ -216,8 +217,8 @@ export function NetworkGraphView(props: NetworkGraphViewProps): JSX.Element {
 									{t("graph.keyPoints")}
 								</h4>
 								<ul className="list-disc space-y-1.5 pl-4 text-zinc-700 dark:text-zinc-300">
-									{selectedNode.keyPoints.map((p, i) => (
-										<li key={i} className="leading-relaxed">
+									{selectedNode.keyPoints.map((p) => (
+										<li key={p} className="leading-relaxed">
 											{p}
 										</li>
 									))}

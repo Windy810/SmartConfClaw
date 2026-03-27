@@ -34,7 +34,7 @@ export function QAPanel({ items }: QAPanelProps): JSX.Element {
 				const isExpanded = expandedIndexMap[index] ?? false;
 				return (
 					<Card
-						key={`${item.question}-${index}`}
+						key={`${item.question}::${item.suggestedAnswerPoints.join("|")}`}
 						className="border-zinc-200/80 bg-white/90 dark:border-zinc-800 dark:bg-zinc-900/90"
 					>
 						<CardHeader className="space-y-2">

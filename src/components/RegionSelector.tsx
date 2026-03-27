@@ -18,6 +18,10 @@ export function RegionSelector(): JSX.Element {
 	const [confirmed, setConfirmed] = useState(false);
 	const rootRef = useRef<HTMLDivElement>(null);
 
+	const handleCancel = useCallback(async () => {
+		await cancelRegionSelection();
+	}, []);
+
 	useEffect(() => {
 		document.body.style.background = "transparent";
 		document.documentElement.style.background = "transparent";
@@ -78,10 +82,6 @@ export function RegionSelector(): JSX.Element {
 
 	const handleFullScreen = async () => {
 		await confirmRegionSelection(null);
-	};
-
-	const handleCancel = async () => {
-		await cancelRegionSelection();
 	};
 
 	const handleReset = () => {
@@ -216,12 +216,14 @@ export function RegionSelector(): JSX.Element {
 					{confirmed && (
 						<>
 							<button
+								type="button"
 								className="region-btn region-btn-primary"
 								onClick={handleConfirm}
 							>
 								{t("region.confirm")}
 							</button>
 							<button
+								type="button"
 								className="region-btn region-btn-secondary"
 								onClick={handleReset}
 							>
@@ -230,12 +232,14 @@ export function RegionSelector(): JSX.Element {
 						</>
 					)}
 					<button
+						type="button"
 						className="region-btn region-btn-secondary"
 						onClick={handleFullScreen}
 					>
 						{t("region.fullscreen")}
 					</button>
 					<button
+						type="button"
 						className="region-btn region-btn-cancel"
 						onClick={handleCancel}
 					>

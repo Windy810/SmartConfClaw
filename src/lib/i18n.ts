@@ -104,6 +104,7 @@ const en = {
 	"float.stop": "Stop",
 	"float.pause": "Pause",
 	"float.resume": "Resume",
+	"float.dragHandle": "Drag to move window",
 
 	// RegionSelector
 	"region.dragHint": "Drag to select capture region",
@@ -278,6 +279,7 @@ const zh: Record<string, string> = {
 	"float.stop": "停止",
 	"float.pause": "暂停",
 	"float.resume": "继续",
+	"float.dragHandle": "拖拽以移动窗口",
 
 	// RegionSelector
 	"region.dragHint": "拖拽鼠标选择截屏区域",
