@@ -1,10 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::fs::File;
-use std::hash::{Hash, Hasher};
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,8 +18,12 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use tauri::{AppHandle, Emitter, Manager};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use image::imageops::{self, FilterType};
 
 mod bot_endpoint;
+
+/// 8×8 average-hash bit differences tolerated as "same frame" (compression, cursor, clock, subpixel noise).
+const PERCEPTUAL_HASH_MAX_BIT_DIFF: u32 = 12;
 
 struct ActiveCapture {
     id: String,
@@ -33,6 +37,8 @@ struct ActiveCapture {
     region: Option<CaptureRegion>,
     /// 1-based index for `screencapture -D` (whole display). When set, region rects are ignored for capture.
     display_index: Option<u32>,
+    /// Wall-clock ms at session start (for T+ offsets on the timeline).
+    session_start_unix_ms: u64,
 }
 
 #[derive(Clone)]
@@ -93,6 +99,9 @@ struct CaptureDisplayInfo {
 #[serde(rename_all = "camelCase")]
 struct CaptureMeta {
     frame_interval_sec: u64,
+    /// Present for captures that record real `frame_offsets.jsonl` timestamps.
+    #[serde(default)]
+    session_start_unix_ms: Option<u64>,
 }
 
 static ACTIVE_CAPTURE: OnceLock<Mutex<Option<ActiveCapture>>> = OnceLock::new();
@@ -175,6 +184,13 @@ fn current_unix_timestamp() -> Result<u64, String> {
         .map_err(|error| format!("failed to get timestamp: {error}"))
 }
 
+fn current_unix_timestamp_ms() -> Result<u64, String> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .map_err(|error| format!("failed to get timestamp: {error}"))
+}
+
 fn build_capture_dir(session_id: &str) -> Result<PathBuf, String> {
     let home = env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
     let capture_dir = PathBuf::from(home)
@@ -211,11 +227,50 @@ fn capture_screenshot(
     Ok(())
 }
 
-fn hash_file(path: &PathBuf) -> Result<u64, String> {
-    let bytes = fs::read(path).map_err(|error| format!("failed to read file for hashing: {error}"))?;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    Ok(hasher.finish())
+/// Perceptual fingerprint of a screenshot: 8×8 grayscale average hash (not raw PNG bytes).
+fn screenshot_perceptual_hash(path: &PathBuf) -> Result<u64, String> {
+    let img = image::open(path).map_err(|e| format!("open image for hash: {e}"))?;
+    let gray = img.to_luma8();
+    let small = imageops::resize(&gray, 8, 8, FilterType::Triangle);
+    let sum: u32 = small.pixels().map(|p| p[0] as u32).sum();
+    let mean = (sum / 64) as u8;
+    let mut hash: u64 = 0;
+    for (i, p) in small.pixels().enumerate() {
+        if p[0] > mean {
+            hash |= 1u64 << i;
+        }
+    }
+    Ok(hash)
+}
+
+#[inline]
+fn perceptual_hash_unchanged(prev: u64, current: u64) -> bool {
+    (prev ^ current).count_ones() <= PERCEPTUAL_HASH_MAX_BIT_DIFF
+}
+
+/// Sleeps for `interval_sec` but wakes every ~50ms to honor stop/pause so Stop never waits a full interval.
+fn sleep_capture_interval_or_stop(
+    stop_signal: &AtomicBool,
+    pause_signal: &AtomicBool,
+    interval_sec: u64,
+) {
+    let total_ms = interval_sec.saturating_mul(1000).max(1);
+    let mut elapsed = 0u64;
+    const CHUNK_MS: u64 = 50;
+    while elapsed < total_ms {
+        if stop_signal.load(Ordering::Relaxed) {
+            return;
+        }
+        while pause_signal.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(120));
+            if stop_signal.load(Ordering::Relaxed) {
+                return;
+            }
+        }
+        let step = CHUNK_MS.min(total_ms - elapsed);
+        thread::sleep(Duration::from_millis(step));
+        elapsed += step;
+    }
 }
 
 fn spawn_frame_sampler(
@@ -226,6 +281,7 @@ fn spawn_frame_sampler(
     region: Option<CaptureRegion>,
     display_index: Option<u32>,
     frame_interval_sec: u64,
+    session_start_unix_ms: u64,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut frame_index: u32 = 1;
@@ -245,7 +301,11 @@ fn spawn_frame_sampler(
                 break;
             }
 
-            thread::sleep(Duration::from_secs(frame_interval_sec.max(1)));
+            sleep_capture_interval_or_stop(
+                &stop_signal,
+                &pause_signal,
+                frame_interval_sec.max(1),
+            );
             if stop_signal.load(Ordering::Relaxed) {
                 break;
             }
@@ -256,7 +316,12 @@ fn spawn_frame_sampler(
                 continue;
             }
 
-            let current_hash = match hash_file(&temp_path) {
+            if stop_signal.load(Ordering::Relaxed) {
+                let _ = fs::remove_file(&temp_path);
+                break;
+            }
+
+            let current_hash = match screenshot_perceptual_hash(&temp_path) {
                 Ok(value) => value,
                 Err(_) => {
                     let _ = fs::remove_file(&temp_path);
@@ -264,7 +329,7 @@ fn spawn_frame_sampler(
                 }
             };
 
-            if current_hash == last_hash {
+            if perceptual_hash_unchanged(last_hash, current_hash) {
                 let _ = fs::remove_file(&temp_path);
                 continue;
             }
@@ -275,29 +340,98 @@ fn spawn_frame_sampler(
                 let _ = fs::remove_file(&temp_path);
             }
 
+            if let Ok(now_ms) = SystemTime::now().duration_since(UNIX_EPOCH) {
+                let offset_sec =
+                    (now_ms.as_millis() as u64).saturating_sub(session_start_unix_ms) as f64
+                        / 1000.0;
+                if let Some(name) = target.file_name().and_then(|n| n.to_str()) {
+                    append_frame_offset_jsonl(&dir, name, offset_sec);
+                }
+            }
+
             last_hash = current_hash;
             frame_index += 1;
         }
     })
 }
 
-fn write_capture_meta(capture_dir: &PathBuf, frame_interval_sec: u64) {
+fn write_capture_meta(capture_dir: &PathBuf, frame_interval_sec: u64, session_start_unix_ms: u64) {
     let meta = CaptureMeta {
         frame_interval_sec: frame_interval_sec.max(1),
+        session_start_unix_ms: Some(session_start_unix_ms),
     };
     if let Ok(raw) = serde_json::to_string_pretty(&meta) {
         let _ = fs::write(capture_dir.join("capture_meta.json"), raw);
     }
 }
 
-fn read_capture_interval(capture_dir: &PathBuf) -> u64 {
+fn read_capture_meta(capture_dir: &PathBuf) -> CaptureMeta {
     let meta_path = capture_dir.join("capture_meta.json");
     if let Ok(raw) = fs::read_to_string(meta_path) {
         if let Ok(meta) = serde_json::from_str::<CaptureMeta>(&raw) {
-            return meta.frame_interval_sec.max(1);
+            return meta;
         }
     }
-    2
+    CaptureMeta {
+        frame_interval_sec: 2,
+        session_start_unix_ms: None,
+    }
+}
+
+fn append_frame_offset_jsonl(dir: &PathBuf, frame: &str, offset_sec: f64) {
+    let path = dir.join("frame_offsets.jsonl");
+    let line = serde_json::json!({ "frame": frame, "offsetSec": offset_sec });
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(
+            file,
+            "{}",
+            serde_json::to_string(&line).unwrap_or_else(|_| "{}".to_string())
+        );
+    }
+}
+
+fn read_frame_offsets_map(capture_dir: &PathBuf) -> HashMap<String, f64> {
+    let path = capture_dir.join("frame_offsets.jsonl");
+    let mut map = HashMap::new();
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return map;
+    };
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<Value>(line) {
+            let frame = v.get("frame").and_then(Value::as_str);
+            let off = v
+                .get("offsetSec")
+                .and_then(Value::as_f64)
+                .or_else(|| v.get("offset_sec").and_then(Value::as_f64));
+            if let (Some(f), Some(o)) = (frame, off) {
+                map.insert(f.to_string(), o);
+            }
+        }
+    }
+    map
+}
+
+fn resolve_timeline_offset_sec(
+    path: &PathBuf,
+    index: usize,
+    offsets: &HashMap<String, f64>,
+    frame_interval_sec: u64,
+) -> f64 {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    if let Some(&v) = offsets.get(name) {
+        return v;
+    }
+    if name == "screen-start.png" {
+        return 0.0;
+    }
+    (index as f64) * (frame_interval_sec as f64)
 }
 
 fn ffmpeg_is_available() -> bool {
@@ -571,7 +705,10 @@ fn build_timeline_from_dir(capture_dir: &PathBuf) -> Vec<Value> {
     }
 
     items.sort_by(|a, b| a.0.cmp(&b.0));
-    let frame_interval_sec = read_capture_interval(capture_dir);
+    let meta = read_capture_meta(capture_dir);
+    let frame_interval_sec = meta.frame_interval_sec.max(1);
+    let offsets = read_frame_offsets_map(capture_dir);
+    let use_real_offsets = !offsets.is_empty();
     let transcript_chunks = split_transcript_into_chunks(&transcript, items.len());
 
     items
@@ -591,15 +728,21 @@ fn build_timeline_from_dir(capture_dir: &PathBuf) -> Vec<Value> {
                 }
                 s
             };
+            let timestamp = resolve_timeline_offset_sec(path, index, &offsets, frame_interval_sec);
+            let time_note = if use_real_offsets {
+                "T+ uses elapsed time from session start when each screenshot was saved (see frame_offsets.jsonl)."
+            } else {
+                "Legacy session: timestamps assume a fixed interval between items (no per-frame offsets on disk)."
+            };
             json!({
               "id": format!("tl-rs-live-{index:03}"),
-              "timestamp": (index as i64) * (frame_interval_sec as i64),
+              "timestamp": timestamp,
               "pptScreenshotPath": to_displayable_image_src(path),
               "originalTranscript": chunk,
               "summary": summary,
               "annotations": [
-                { "term": "Frame Deduplication", "definition": "If current frame hash equals previous frame hash, the frame is ignored." },
-                { "term": "Sampling Interval", "definition": format!("Screenshots are sampled every {} seconds while capture is running.", frame_interval_sec) }
+                { "term": "Frame Deduplication", "definition": "Screenshots are compared with a small 8×8 perceptual hash; if the picture is effectively unchanged, the frame is not saved." },
+                { "term": "Timeline time (T+)", "definition": format!("{} Poll interval is {} s; only changed screens are stored.", time_note, frame_interval_sec) }
               ]
             })
         })
@@ -1772,6 +1915,7 @@ pub(crate) fn start_capture_session_inner(
     let timestamp = current_unix_timestamp()?;
     let session_id = format!("session-{timestamp}");
     let capture_dir = build_capture_dir(&session_id)?;
+    let session_start_unix_ms = current_unix_timestamp_ms()?;
     let screenshot_path = capture_dir.join("screen-start.png");
     let audio_path = capture_dir.join("audio.wav");
     let audio_log_path = capture_dir.join("audio-ffmpeg.log");
@@ -1818,8 +1962,12 @@ pub(crate) fn start_capture_session_inner(
         region_for_sampler.as_ref(),
         display_index,
     )?;
-    write_capture_meta(&capture_dir, resolved_frame_interval);
-    let initial_hash = hash_file(&screenshot_path)?;
+    write_capture_meta(
+        &capture_dir,
+        resolved_frame_interval,
+        session_start_unix_ms,
+    );
+    let initial_hash = screenshot_perceptual_hash(&screenshot_path)?;
     let audio_process = spawn_audio_capture(
         &audio_path,
         &audio_log_path,
@@ -1837,6 +1985,7 @@ pub(crate) fn start_capture_session_inner(
         region_for_sampler.clone(),
         display_index,
         resolved_frame_interval,
+        session_start_unix_ms,
     );
 
     println!("start_capture_session invoked: {}", session_id);
@@ -1851,6 +2000,7 @@ pub(crate) fn start_capture_session_inner(
         pause_signal,
         region: region_for_sampler,
         display_index,
+        session_start_unix_ms,
     });
 
     let _ = silent;
@@ -1916,6 +2066,11 @@ fn stop_capture_session(app: AppHandle) -> Result<String, String> {
         current.region.as_ref(),
         current.display_index,
     );
+    if let Ok(stop_ms) = current_unix_timestamp_ms() {
+        let offset_sec =
+            (stop_ms.saturating_sub(current.session_start_unix_ms)) as f64 / 1000.0;
+        append_frame_offset_jsonl(&current.dir, "screen-stop.png", offset_sec);
+    }
 
     println!("stop_capture_session invoked: {}", current.id);
 

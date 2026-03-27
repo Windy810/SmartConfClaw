@@ -11,6 +11,15 @@ interface SessionViewerProps {
 	session: AcademicSession;
 }
 
+/** Formats T+ label from seconds (supports fractional offsets from the backend). */
+function formatTimelineSeconds(sec: number): string {
+	if (!Number.isFinite(sec)) {
+		return "0";
+	}
+	const rounded = Math.round(sec * 10) / 10;
+	return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
 function resolveScreenshot(path: string): string {
 	if (path.startsWith("/placeholders/")) {
 		return "https://placehold.co/1120x640/E4E4E7/18181B?text=PPT+Screenshot";
@@ -85,7 +94,9 @@ export function SessionViewer({ session }: SessionViewerProps): JSX.Element {
 												: "border-transparent text-zinc-600 hover:border-zinc-200 hover:bg-zinc-50 dark:text-zinc-300 dark:hover:border-zinc-700 dark:hover:bg-zinc-900",
 										].join(" ")}
 									>
-										<p className="font-medium">T+{item.timestamp}s</p>
+										<p className="font-medium">
+											T+{formatTimelineSeconds(item.timestamp)}s
+										</p>
 										<p className="mt-1 line-clamp-2 text-xs text-zinc-500 dark:text-zinc-400">
 											{item.summary}
 										</p>
