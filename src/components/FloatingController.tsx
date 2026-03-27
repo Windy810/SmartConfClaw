@@ -1,77 +1,81 @@
-import { useCallback, useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { getCapturePaused, setCapturePaused, stopCaptureSession } from "../lib/tauri";
+import { useCallback, useEffect, useState } from "react";
 import { useT } from "../lib/i18n";
+import {
+	getCapturePaused,
+	setCapturePaused,
+	stopCaptureSession,
+} from "../lib/tauri";
 
 export function FloatingController(): JSX.Element {
-  const t = useT();
-  const [elapsed, setElapsed] = useState(0);
-  const [stopping, setStopping] = useState(false);
-  const [paused, setPaused] = useState(false);
-  const [pauseBusy, setPauseBusy] = useState(false);
+	const t = useT();
+	const [elapsed, setElapsed] = useState(0);
+	const [stopping, setStopping] = useState(false);
+	const [paused, setPaused] = useState(false);
+	const [pauseBusy, setPauseBusy] = useState(false);
 
-  useEffect(() => {
-    void getCapturePaused()
-      .then(setPaused)
-      .catch(() => {
-        /* window may load before capture state exists */
-      });
-  }, []);
+	useEffect(() => {
+		void getCapturePaused()
+			.then(setPaused)
+			.catch(() => {
+				/* window may load before capture state exists */
+			});
+	}, []);
 
-  useEffect(() => {
-    if (paused) {
-      return;
-    }
-    const interval = setInterval(() => {
-      setElapsed((prev) => prev + 1);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [paused]);
+	useEffect(() => {
+		if (paused) {
+			return;
+		}
+		const interval = setInterval(() => {
+			setElapsed((prev) => prev + 1);
+		}, 1000);
+		return () => clearInterval(interval);
+	}, [paused]);
 
-  const formatTime = (seconds: number): string => {
-    const m = Math.floor(seconds / 60)
-      .toString()
-      .padStart(2, "0");
-    const s = (seconds % 60).toString().padStart(2, "0");
-    return `${m}:${s}`;
-  };
+	const formatTime = (seconds: number): string => {
+		const m = Math.floor(seconds / 60)
+			.toString()
+			.padStart(2, "0");
+		const s = (seconds % 60).toString().padStart(2, "0");
+		return `${m}:${s}`;
+	};
 
-  const handleStop = async () => {
-    setStopping(true);
-    try {
-      await stopCaptureSession();
-    } catch (error) {
-      console.error("Failed to stop capture:", error);
-      setStopping(false);
-    }
-  };
+	const handleStop = async () => {
+		setStopping(true);
+		try {
+			await stopCaptureSession();
+		} catch (error) {
+			console.error("Failed to stop capture:", error);
+			setStopping(false);
+		}
+	};
 
-  const handleTogglePause = async () => {
-    setPauseBusy(true);
-    try {
-      const next = !paused;
-      await setCapturePaused(next);
-      setPaused(next);
-    } catch (error) {
-      console.error("Failed to toggle pause:", error);
-    } finally {
-      setPauseBusy(false);
-    }
-  };
+	const handleTogglePause = async () => {
+		setPauseBusy(true);
+		try {
+			const next = !paused;
+			await setCapturePaused(next);
+			setPaused(next);
+		} catch (error) {
+			console.error("Failed to toggle pause:", error);
+		} finally {
+			setPauseBusy(false);
+		}
+	};
 
-  const handleDrag = useCallback(async (e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest("button")) return;
-    e.preventDefault();
-    try {
-      await getCurrentWindow().startDragging();
-    } catch {
-      // ignore if not supported
-    }
-  }, []);
+	const handleDrag = useCallback(async (e: React.MouseEvent) => {
+		if ((e.target as HTMLElement).closest("button")) return;
+		e.preventDefault();
+		try {
+			await getCurrentWindow().startDragging();
+		} catch {
+			// ignore if not supported
+		}
+	}, []);
 
-  return (
-    <>
-      <style>{`
+	return (
+		<>
+			<style>{`
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body, #root { background: transparent !important; }
         @keyframes rec-pulse {
@@ -107,81 +111,98 @@ export function FloatingController(): JSX.Element {
         .float-stop:hover { background: rgba(220, 38, 38, 0.95); }
       `}</style>
 
-      <div
-        onMouseDown={handleDrag}
-        style={{
-          width: "100%",
-          height: "100%",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 8,
-          padding: "6px 10px",
-          borderRadius: 12,
-          background: "rgba(24, 24, 27, 0.42)",
-          backdropFilter: "blur(18px) saturate(1.2)",
-          WebkitBackdropFilter: "blur(18px) saturate(1.2)",
-          border: "1px solid rgba(255,255,255,0.12)",
-          boxShadow: "0 4px 24px rgba(0,0,0,0.25)",
-          color: "white",
-          fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif",
-          fontSize: 12,
-          cursor: "grab",
-          overflow: "hidden",
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            pointerEvents: "none",
-            minWidth: 0,
-          }}
-        >
-          <div
-            style={{
-              width: 7,
-              height: 7,
-              borderRadius: "50%",
-              flexShrink: 0,
-              background: paused ? "#eab308" : "#ef4444",
-              animation: paused ? "paused-pulse 2s ease-in-out infinite" : "rec-pulse 1.4s ease-in-out infinite",
-              boxShadow: paused ? "0 0 6px rgba(234,179,8,0.45)" : "0 0 6px rgba(239,68,68,0.45)",
-            }}
-          />
-          <span style={{ fontWeight: 600, fontSize: 11, letterSpacing: 0.4 }}>
-            {paused ? "‖" : "●"} REC
-          </span>
-        </div>
+			<div
+				onMouseDown={handleDrag}
+				style={{
+					width: "100%",
+					height: "100%",
+					display: "flex",
+					alignItems: "center",
+					justifyContent: "space-between",
+					gap: 8,
+					padding: "6px 10px",
+					borderRadius: 12,
+					background: "rgba(24, 24, 27, 0.42)",
+					backdropFilter: "blur(18px) saturate(1.2)",
+					WebkitBackdropFilter: "blur(18px) saturate(1.2)",
+					border: "1px solid rgba(255,255,255,0.12)",
+					boxShadow: "0 4px 24px rgba(0,0,0,0.25)",
+					color: "white",
+					fontFamily:
+						"-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif",
+					fontSize: 12,
+					cursor: "grab",
+					overflow: "hidden",
+				}}
+			>
+				<div
+					style={{
+						display: "flex",
+						alignItems: "center",
+						gap: 6,
+						pointerEvents: "none",
+						minWidth: 0,
+					}}
+				>
+					<div
+						style={{
+							width: 7,
+							height: 7,
+							borderRadius: "50%",
+							flexShrink: 0,
+							background: paused ? "#eab308" : "#ef4444",
+							animation: paused
+								? "paused-pulse 2s ease-in-out infinite"
+								: "rec-pulse 1.4s ease-in-out infinite",
+							boxShadow: paused
+								? "0 0 6px rgba(234,179,8,0.45)"
+								: "0 0 6px rgba(239,68,68,0.45)",
+						}}
+					/>
+					<span style={{ fontWeight: 600, fontSize: 11, letterSpacing: 0.4 }}>
+						{paused ? "‖" : "●"} REC
+					</span>
+				</div>
 
-        <span
-          style={{
-            fontVariantNumeric: "tabular-nums",
-            fontWeight: 500,
-            fontSize: 13,
-            letterSpacing: 0.4,
-            pointerEvents: "none",
-            opacity: paused ? 0.65 : 1,
-          }}
-        >
-          {formatTime(elapsed)}
-        </span>
+				<span
+					style={{
+						fontVariantNumeric: "tabular-nums",
+						fontWeight: 500,
+						fontSize: 13,
+						letterSpacing: 0.4,
+						pointerEvents: "none",
+						opacity: paused ? 0.65 : 1,
+					}}
+				>
+					{formatTime(elapsed)}
+				</span>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-          <button
-            type="button"
-            className="float-btn float-pause"
-            disabled={pauseBusy}
-            onClick={() => void handleTogglePause()}
-          >
-            {pauseBusy ? "…" : paused ? t("float.resume") : t("float.pause")}
-          </button>
-          <button type="button" className="float-btn float-stop" disabled={stopping} onClick={() => void handleStop()}>
-            {stopping ? "…" : t("float.stop")}
-          </button>
-        </div>
-      </div>
-    </>
-  );
+				<div
+					style={{
+						display: "flex",
+						alignItems: "center",
+						gap: 6,
+						flexShrink: 0,
+					}}
+				>
+					<button
+						type="button"
+						className="float-btn float-pause"
+						disabled={pauseBusy}
+						onClick={() => void handleTogglePause()}
+					>
+						{pauseBusy ? "…" : paused ? t("float.resume") : t("float.pause")}
+					</button>
+					<button
+						type="button"
+						className="float-btn float-stop"
+						disabled={stopping}
+						onClick={() => void handleStop()}
+					>
+						{stopping ? "…" : t("float.stop")}
+					</button>
+				</div>
+			</div>
+		</>
+	);
 }
