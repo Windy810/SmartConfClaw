@@ -307,6 +307,7 @@ export async function generateSessionAnalysis(
 	id: string,
 	openRouterApiKey: string,
 	openRouterModel: string,
+	openRouterMaxTokens: number,
 ): Promise<string> {
 	if (!isTauriRuntime()) {
 		return "Web preview mode: OpenRouter analysis is unavailable.";
@@ -316,6 +317,34 @@ export async function generateSessionAnalysis(
 		id,
 		openRouterApiKey,
 		openRouterModel,
+		openRouterMaxTokens,
+	});
+}
+
+export interface SessionQaTurn {
+	role: "user" | "assistant";
+	content: string;
+}
+
+export async function askSessionQuestion(
+	id: string,
+	question: string,
+	openRouterApiKey: string,
+	openRouterModel: string,
+	openRouterMaxTokens: number,
+	chatHistory?: SessionQaTurn[],
+): Promise<string> {
+	if (!isTauriRuntime()) {
+		return "Web 预览模式下无法调用本机 OpenRouter，请在桌面应用中针对已同步的会话提问。";
+	}
+
+	return invoke<string>("ask_session_question", {
+		id,
+		question,
+		openRouterApiKey,
+		openRouterModel,
+		openRouterMaxTokens,
+		chatHistory: chatHistory ?? null,
 	});
 }
 

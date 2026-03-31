@@ -108,6 +108,9 @@ function MainApp(): JSX.Element {
 	const asrLanguage = useSettingsStore((state) => state.asrLanguage);
 	const openRouterModel = useSettingsStore((state) => state.openRouterModel);
 	const openRouterApiKey = useSettingsStore((state) => state.openRouterApiKey);
+	const openRouterMaxTokens = useSettingsStore(
+		(state) => state.openRouterMaxTokens,
+	);
 	const themeMode = useSettingsStore((state) => state.themeMode);
 	const captureSourceMode = useSettingsStore(
 		(state) => state.captureSourceMode,
@@ -446,6 +449,7 @@ function MainApp(): JSX.Element {
 				currentSessionId,
 				openRouterApiKey,
 				openRouterModel,
+				openRouterMaxTokens,
 			);
 			setCaptureMessage(`AI analysis generated: ${result}`);
 			bumpGraphRefresh();

@@ -65,6 +65,23 @@ const en = {
 	"viewer.relatedPapers": "Related Papers & Articles",
 	"viewer.relatedPapersEmpty":
 		"Run AI analysis to discover related papers and articles.",
+	"viewer.sessionAskTitle": "Ask about this session",
+	"viewer.sessionAskHint":
+		"Uses OpenRouter with this session’s transcript, AI summary, timeline segments, and extracted concepts. Replies stay grounded in this meeting only.",
+	"viewer.sessionAskClear": "Clear chat",
+	"viewer.sessionAskWebOnly":
+		"Session Q&A runs in the desktop app (Tauri); the web preview cannot call OpenRouter from here.",
+	"viewer.sessionAskEmpty":
+		"Ask anything about what was said or shown in this capture.",
+	"viewer.sessionAskYou": "You",
+	"viewer.sessionAskAssistant": "Assistant",
+	"viewer.sessionAskThinking": "Thinking…",
+	"viewer.sessionAskPlaceholder":
+		"e.g. What main method did they compare against the baseline?",
+	"viewer.sessionAskSend": "Ask",
+	"viewer.sessionAskNoKey":
+		"OpenRouter API key is empty. Add it under Settings to ask questions.",
+	"viewer.sessionAskError": "Could not get an answer: {message}",
 
 	// GraphViewer
 	"graph.title": "Knowledge Graph",
@@ -160,6 +177,9 @@ const en = {
 		"Reserved for LLM summarization and question generation API calls.",
 	"settings.openRouterModel": "Model",
 	"settings.openRouterApiKey": "API Key",
+	"settings.openRouterMaxTokens": "Max output tokens",
+	"settings.openRouterMaxTokensDesc":
+		"Caps each OpenRouter completion (default 8192). Some models default to very large limits and trigger credit errors—lower this if needed. If the API returns “can only afford N”, the app retries once with that budget automatically.",
 	"settings.saveOpenRouterConfig": "Save OpenRouter Config",
 	"settings.storedLocally": "Stored locally for prototype",
 	"settings.persistentZustand": "Persistent via Zustand",
@@ -241,6 +261,20 @@ const zh: Record<string, string> = {
 	"viewer.keyConcepts": "核心概念",
 	"viewer.relatedPapers": "相关论文与文章",
 	"viewer.relatedPapersEmpty": "运行 AI 分析以发现相关论文与文章。",
+	"viewer.sessionAskTitle": "针对本场会议提问",
+	"viewer.sessionAskHint":
+		"通过 OpenRouter 使用本会话的转写全文、AI 摘要、时间轴片段与已提取概念作答，回答仅依据本场内容。",
+	"viewer.sessionAskClear": "清空对话",
+	"viewer.sessionAskWebOnly":
+		"针对会话的问答需在桌面版（Tauri）中使用；网页预览无法在此调用 OpenRouter。",
+	"viewer.sessionAskEmpty": "可以询问本场讲解中提到的观点、方法或细节。",
+	"viewer.sessionAskYou": "你",
+	"viewer.sessionAskAssistant": "助手",
+	"viewer.sessionAskThinking": "正在思考…",
+	"viewer.sessionAskPlaceholder": "例如：主讲人提出的核心方法是什么？",
+	"viewer.sessionAskSend": "提问",
+	"viewer.sessionAskNoKey": "尚未填写 OpenRouter API 密钥，请先在「设置」中配置。",
+	"viewer.sessionAskError": "无法获取回答：{message}",
 
 	// GraphViewer
 	"graph.title": "知识图谱",
@@ -330,6 +364,9 @@ const zh: Record<string, string> = {
 	"settings.openRouterDesc": "用于 LLM 摘要和问题生成的 API 调用。",
 	"settings.openRouterModel": "模型",
 	"settings.openRouterApiKey": "API 密钥",
+	"settings.openRouterMaxTokens": "单次回复最大 token 数",
+	"settings.openRouterMaxTokensDesc":
+		"限制每次 OpenRouter 补全的上限（默认 8192）。部分模型默认上限很大，容易触发余额不足；可调小。若接口提示 “can only afford N”，应用会自动按该数值重试一次。",
 	"settings.saveOpenRouterConfig": "保存 OpenRouter 配置",
 	"settings.storedLocally": "原型阶段，本地存储",
 	"settings.persistentZustand": "通过 Zustand 持久化",

@@ -74,6 +74,9 @@ export function SettingsPanel(): JSX.Element {
 	const asrLanguage = useSettingsStore((state) => state.asrLanguage);
 	const openRouterModel = useSettingsStore((state) => state.openRouterModel);
 	const openRouterApiKey = useSettingsStore((state) => state.openRouterApiKey);
+	const openRouterMaxTokens = useSettingsStore(
+		(state) => state.openRouterMaxTokens,
+	);
 	const setModelProvider = useSettingsStore((state) => state.setModelProvider);
 	const setScreenshotDirectory = useSettingsStore(
 		(state) => state.setScreenshotDirectory,
@@ -104,6 +107,9 @@ export function SettingsPanel(): JSX.Element {
 	const setOpenRouterApiKey = useSettingsStore(
 		(state) => state.setOpenRouterApiKey,
 	);
+	const setOpenRouterMaxTokens = useSettingsStore(
+		(state) => state.setOpenRouterMaxTokens,
+	);
 	const resetDefaults = useSettingsStore((state) => state.resetDefaults);
 
 	const [draftDirectory, setDraftDirectory] =
@@ -128,6 +134,8 @@ export function SettingsPanel(): JSX.Element {
 		useState<string>(openRouterModel);
 	const [draftOpenRouterApiKey, setDraftOpenRouterApiKey] =
 		useState<string>(openRouterApiKey);
+	const [draftOpenRouterMaxTokens, setDraftOpenRouterMaxTokens] =
+		useState<string>(String(openRouterMaxTokens));
 	const [audioDevices, setAudioDevices] = useState<AudioInputDevice[]>([]);
 	const [audioListError, setAudioListError] = useState<string | null>(null);
 
@@ -187,6 +195,10 @@ export function SettingsPanel(): JSX.Element {
 	useEffect(() => {
 		setDraftSelectedSpecs([...audioInputSpecs]);
 	}, [audioInputSpecs]);
+
+	useEffect(() => {
+		setDraftOpenRouterMaxTokens(String(openRouterMaxTokens));
+	}, [openRouterMaxTokens]);
 
 	const orphanSpecs = useMemo(
 		() =>
@@ -724,6 +736,30 @@ export function SettingsPanel(): JSX.Element {
 						/>
 					</div>
 
+					<div className="space-y-2">
+						<label
+							htmlFor="openrouter-max-tokens"
+							className="text-sm font-medium text-zinc-700 dark:text-zinc-200"
+						>
+							{t("settings.openRouterMaxTokens")}
+						</label>
+						<input
+							id="openrouter-max-tokens"
+							type="number"
+							min={256}
+							max={131072}
+							step={256}
+							value={draftOpenRouterMaxTokens}
+							onChange={(event) =>
+								setDraftOpenRouterMaxTokens(event.target.value)
+							}
+							className={inputCls}
+						/>
+						<p className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+							{t("settings.openRouterMaxTokensDesc")}
+						</p>
+					</div>
+
 					<div className="flex items-center gap-2">
 						<Button
 							size="sm"
@@ -731,6 +767,13 @@ export function SettingsPanel(): JSX.Element {
 							onClick={() => {
 								setOpenRouterModel(draftOpenRouterModel);
 								setOpenRouterApiKey(draftOpenRouterApiKey);
+								const mt = Number.parseInt(
+									draftOpenRouterMaxTokens.trim(),
+									10,
+								);
+								if (Number.isFinite(mt)) {
+									setOpenRouterMaxTokens(mt);
+								}
 							}}
 						>
 							{t("settings.saveOpenRouterConfig")}

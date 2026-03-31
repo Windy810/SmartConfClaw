@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { useT } from "../lib/i18n";
 import type { AcademicSession, TimelineItem } from "../types";
+import { SessionQaChat } from "./SessionQaChat";
 import { Badge } from "./ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { ScrollArea } from "./ui/scroll-area";
@@ -217,6 +218,8 @@ export function SessionViewer({ session }: SessionViewerProps): JSX.Element {
 							</p>
 						)}
 					</div>
+
+					<SessionQaChat sessionId={session.id} />
 				</CardContent>
 			</Card>
 		</div>

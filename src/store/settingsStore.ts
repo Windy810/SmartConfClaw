@@ -27,6 +27,8 @@ export interface AppSettings {
 	asrLanguage: string;
 	openRouterModel: string;
 	openRouterApiKey: string;
+	/** Upper bound on completion tokens sent to OpenRouter (avoids huge model defaults on tight credits). */
+	openRouterMaxTokens: number;
 	captureSourceMode: CaptureSourceMode;
 	/** 1-based display index (matches system picker / `screencapture -D`). */
 	captureDisplayIndex: number;
@@ -52,6 +54,7 @@ interface SettingsState extends AppSettings {
 	setAsrLanguage: (language: string) => void;
 	setOpenRouterModel: (model: string) => void;
 	setOpenRouterApiKey: (apiKey: string) => void;
+	setOpenRouterMaxTokens: (maxTokens: number) => void;
 	setCaptureSourceMode: (mode: CaptureSourceMode) => void;
 	setCaptureDisplayIndex: (index: number) => void;
 	setSilentCaptureMinimizeMain: (value: boolean) => void;
@@ -76,6 +79,7 @@ const defaultSettings: AppSettings = {
 	asrLanguage: "zh",
 	openRouterModel: "minimax/minimax-m2.5-chat",
 	openRouterApiKey: "",
+	openRouterMaxTokens: 8192,
 	captureSourceMode: "region",
 	captureDisplayIndex: 1,
 	silentCaptureMinimizeMain: true,
@@ -109,6 +113,12 @@ export const useSettingsStore = create<SettingsState>()(
 			setAsrLanguage: (language) => set({ asrLanguage: language }),
 			setOpenRouterModel: (model) => set({ openRouterModel: model }),
 			setOpenRouterApiKey: (apiKey) => set({ openRouterApiKey: apiKey }),
+			setOpenRouterMaxTokens: (maxTokens) =>
+				set({
+					openRouterMaxTokens: Number.isFinite(maxTokens)
+						? Math.max(256, Math.min(131_072, Math.floor(maxTokens)))
+						: 8192,
+				}),
 			setCaptureSourceMode: (mode) => set({ captureSourceMode: mode }),
 			setCaptureDisplayIndex: (index) =>
 				set({
@@ -140,6 +150,7 @@ export const useSettingsStore = create<SettingsState>()(
 				asrLanguage: state.asrLanguage,
 				openRouterModel: state.openRouterModel,
 				openRouterApiKey: state.openRouterApiKey,
+				openRouterMaxTokens: state.openRouterMaxTokens,
 				captureSourceMode: state.captureSourceMode,
 				captureDisplayIndex: state.captureDisplayIndex,
 				silentCaptureMinimizeMain: state.silentCaptureMinimizeMain,

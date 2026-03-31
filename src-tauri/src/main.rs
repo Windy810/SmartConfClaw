@@ -966,11 +966,30 @@ struct AnalysisOutput {
     mind_map: Value,
 }
 
-fn call_openrouter_analysis_once(
+fn clamp_openrouter_max_tokens(requested: u32) -> u32 {
+    requested.clamp(256, 131_072)
+}
+
+/// Parses `can only afford 17960` from OpenRouter credit / max_tokens errors.
+fn parse_openrouter_affordable_tokens(err_msg: &str) -> Option<u32> {
+    let lower = err_msg.to_lowercase();
+    if !lower.contains("afford") {
+        return None;
+    }
+    const NEEDLE: &str = "can only afford ";
+    let idx = lower.find(NEEDLE)?;
+    let start = idx + NEEDLE.len();
+    let rest = err_msg.get(start..)?;
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
+fn call_openrouter_analysis_request(
     openrouter_api_key: &str,
     openrouter_model: &str,
     transcript: &str,
     image_data_urls: &[String],
+    max_tokens_cap: u32,
 ) -> Result<AnalysisOutput, String> {
     let prompt = format!(
         "You are an ML/AI research assistant. Analyze the following meeting/lecture transcript and screenshots \
@@ -1058,13 +1077,15 @@ Transcript:\n{}",
         }));
     }
 
+    let max_tokens = clamp_openrouter_max_tokens(max_tokens_cap);
     let payload = json!({
       "model": openrouter_model,
       "messages": [
         { "role": "system", "content": "Return only valid JSON. No markdown fences." },
         { "role": "user", "content": user_content }
       ],
-      "temperature": 0.2
+      "temperature": 0.2,
+      "max_tokens": max_tokens
     })
     .to_string();
 
@@ -1185,11 +1206,53 @@ Transcript:\n{}",
     })
 }
 
+fn call_openrouter_analysis_once(
+    openrouter_api_key: &str,
+    openrouter_model: &str,
+    transcript: &str,
+    image_data_urls: &[String],
+    max_tokens: u32,
+) -> Result<AnalysisOutput, String> {
+    let mut cap = clamp_openrouter_max_tokens(max_tokens);
+    for _ in 0..6 {
+        match call_openrouter_analysis_request(
+            openrouter_api_key,
+            openrouter_model,
+            transcript,
+            image_data_urls,
+            cap,
+        ) {
+            Ok(output) => return Ok(output),
+            Err(e) => {
+                let lower = e.to_lowercase();
+                let budget_hint = lower.contains("max_tokens")
+                    || lower.contains("credits")
+                    || lower.contains("afford");
+                if budget_hint {
+                    if let Some(aff) = parse_openrouter_affordable_tokens(&e) {
+                        let next = clamp_openrouter_max_tokens(aff.min(cap));
+                        if next < cap {
+                            cap = next;
+                            continue;
+                        }
+                    }
+                }
+                return Err(e);
+            }
+        }
+    }
+    Err(
+        "OpenRouter: could not satisfy max_tokens after automatic budget adjustments. Lower OpenRouter max output tokens in Settings."
+            .to_string(),
+    )
+}
+
 fn call_openrouter_analysis(
     openrouter_api_key: &str,
     openrouter_model: &str,
     transcript: &str,
     image_data_urls: &[String],
+    max_tokens: u32,
 ) -> Result<(AnalysisOutput, String), String> {
     let preferred_model = openrouter_model.trim();
     let mut candidates: Vec<String> = vec![preferred_model.to_string()];
@@ -1206,7 +1269,13 @@ fn call_openrouter_analysis(
 
     let mut last_error = String::new();
     for candidate in &candidates {
-        match call_openrouter_analysis_once(openrouter_api_key, candidate, transcript, image_data_urls) {
+        match call_openrouter_analysis_once(
+            openrouter_api_key,
+            candidate,
+            transcript,
+            image_data_urls,
+            max_tokens,
+        ) {
             Ok(output) => return Ok((output, candidate.clone())),
             Err(error) => {
                 // Retry once without images if model rejects multimodal payload.
@@ -1217,7 +1286,13 @@ fn call_openrouter_analysis(
                         || lower_error.contains("content type")
                         || lower_error.contains("unsupported"))
                 {
-                    if let Ok(output) = call_openrouter_analysis_once(openrouter_api_key, candidate, transcript, &[]) {
+                    if let Ok(output) = call_openrouter_analysis_once(
+                        openrouter_api_key,
+                        candidate,
+                        transcript,
+                        &[],
+                        max_tokens,
+                    ) {
                         return Ok((output, candidate.clone()));
                     }
                 }
@@ -1236,6 +1311,346 @@ fn call_openrouter_analysis(
     Err(format!(
         "all candidate models failed. Last error: {last_error}. Please change model in Settings."
     ))
+}
+
+fn openrouter_chat_completion(
+    openrouter_api_key: &str,
+    openrouter_model: &str,
+    messages: &[Value],
+    temperature: f64,
+    max_tokens_cap: u32,
+) -> Result<String, String> {
+    let max_tokens = clamp_openrouter_max_tokens(max_tokens_cap);
+    let payload = json!({
+      "model": openrouter_model,
+      "messages": messages,
+      "temperature": temperature,
+      "max_tokens": max_tokens
+    })
+    .to_string();
+
+    let tmp_dir = env::temp_dir();
+    let payload_path = tmp_dir.join(format!(
+        "scholarclaw-openrouter-chat-{}.json",
+        current_unix_timestamp().unwrap_or(0)
+    ));
+    fs::write(&payload_path, payload.as_bytes())
+        .map_err(|e| format!("failed to write temp payload file: {e}"))?;
+
+    let output = Command::new("curl")
+        .arg("-sS")
+        .arg("-X")
+        .arg("POST")
+        .arg("https://openrouter.ai/api/v1/chat/completions")
+        .arg("-H")
+        .arg("Content-Type: application/json")
+        .arg("-H")
+        .arg(format!("Authorization: Bearer {}", openrouter_api_key))
+        .arg("-d")
+        .arg(format!("@{}", payload_path.to_string_lossy()))
+        .output()
+        .map_err(|error| format!("failed to call OpenRouter: {error}"))?;
+
+    let _ = fs::remove_file(&payload_path);
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(format!("OpenRouter request failed: {stderr}"));
+    }
+
+    let body = String::from_utf8_lossy(&output.stdout).to_string();
+    let outer: Value = serde_json::from_str(&body)
+        .map_err(|error| format!("failed to parse OpenRouter response JSON: {error}"))?;
+
+    if let Some(error_message) = outer
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+    {
+        return Err(format!("OpenRouter API error: {error_message}"));
+    }
+
+    outer
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .map(String::from)
+        .ok_or_else(|| "OpenRouter response missing choices[0].message.content".to_string())
+}
+
+fn openrouter_chat_completion_with_budget_retry(
+    openrouter_api_key: &str,
+    openrouter_model: &str,
+    messages: &[Value],
+    temperature: f64,
+    max_tokens: u32,
+) -> Result<String, String> {
+    let mut cap = clamp_openrouter_max_tokens(max_tokens);
+    for _ in 0..6 {
+        match openrouter_chat_completion(
+            openrouter_api_key,
+            openrouter_model,
+            messages,
+            temperature,
+            cap,
+        ) {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                let lower = e.to_lowercase();
+                let budget_hint = lower.contains("max_tokens")
+                    || lower.contains("credits")
+                    || lower.contains("afford");
+                if budget_hint {
+                    if let Some(aff) = parse_openrouter_affordable_tokens(&e) {
+                        let next = clamp_openrouter_max_tokens(aff.min(cap));
+                        if next < cap {
+                            cap = next;
+                            continue;
+                        }
+                    }
+                }
+                return Err(e);
+            }
+        }
+    }
+    Err(
+        "OpenRouter: could not satisfy max_tokens after automatic budget adjustments. Lower OpenRouter max output tokens in Settings."
+            .to_string(),
+    )
+}
+
+fn truncate_chars(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}…\n[truncated, {} bytes omitted]",
+        &s[..end],
+        s.len() - end
+    )
+}
+
+fn build_session_qa_context(id: &str) -> Result<String, String> {
+    let capture_dir = resolve_capture_dir_for_id(id).ok_or_else(|| {
+        format!(
+            "No local capture folder found for `{id}`. Sync the session or check Screenshot Directory in Settings."
+        )
+    })?;
+
+    let mut parts: Vec<String> = Vec::new();
+    parts.push(format!("Session ID: {id}\n"));
+
+    let transcript_path = capture_dir.join("transcript.txt");
+    if let Ok(t) = fs::read_to_string(&transcript_path) {
+        let t = t.trim();
+        if !t.is_empty() {
+            parts.push(format!(
+                "--- Full transcript ---\n{}\n",
+                truncate_chars(t, 80_000)
+            ));
+        }
+    }
+
+    if let Ok(s) = fs::read_to_string(capture_dir.join("summary.txt")) {
+        let s = s.trim();
+        if !s.is_empty() {
+            parts.push(format!("--- AI session summary ---\n{}\n", truncate_chars(s, 16_000)));
+        }
+    }
+
+    if let Ok(raw) = fs::read_to_string(capture_dir.join("concepts.json")) {
+        if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
+            if let Some(arr) = parsed.as_array() {
+                if !arr.is_empty() {
+                    let compact = serde_json::to_string(arr)
+                        .unwrap_or_else(|_| "[]".to_string());
+                    parts.push(format!(
+                        "--- Extracted key concepts (JSON) ---\n{}\n",
+                        truncate_chars(&compact, 24_000)
+                    ));
+                }
+            }
+        }
+    }
+
+    if let Ok(raw) = fs::read_to_string(capture_dir.join("references.json")) {
+        if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
+            if let Some(arr) = parsed.as_array() {
+                if !arr.is_empty() {
+                    let compact = serde_json::to_string(arr)
+                        .unwrap_or_else(|_| "[]".to_string());
+                    parts.push(format!(
+                        "--- Related references (JSON) ---\n{}\n",
+                        truncate_chars(&compact, 24_000)
+                    ));
+                }
+            }
+        }
+    }
+
+    let timeline = build_timeline_from_dir(&capture_dir);
+    if !timeline.is_empty() {
+        let mut tl = String::from("--- Timeline (sampled frames / segments) ---\n");
+        for item in timeline.iter().take(120) {
+            let ts = item
+                .get("timestamp")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let sum = item
+                .get("summary")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let ot = item
+                .get("originalTranscript")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            tl.push_str(&format!(
+                "T+{ts}s — summary: {}\n  segment: {}\n",
+                truncate_chars(sum, 800),
+                truncate_chars(ot, 2_000)
+            ));
+        }
+        parts.push(tl);
+    }
+
+    let ctx = parts.join("\n");
+    if ctx.len() < 120 {
+        return Err(
+            "Not enough meeting text in this session. Run Transcribe and/or Generate AI first."
+                .to_string(),
+        );
+    }
+    Ok(ctx)
+}
+
+fn call_openrouter_session_qa(
+    openrouter_api_key: &str,
+    openrouter_model: &str,
+    meeting_context: &str,
+    chat_history: &[SessionQaTurn],
+    question: &str,
+    max_tokens: u32,
+) -> Result<String, String> {
+    let system_text = format!(
+        "You are a careful research meeting assistant. Answer using ONLY the meeting context below. \
+If the context does not contain enough information, say so clearly and suggest what is missing (e.g. run transcription). \
+Prefer the same language as the user's question. Be concise but precise.\n\n--- Meeting context ---\n{meeting_context}"
+    );
+
+    let mut messages: Vec<Value> = vec![json!({
+        "role": "system",
+        "content": system_text
+    })];
+
+    for turn in chat_history.iter().take(24) {
+        let role = turn.role.trim();
+        if role != "user" && role != "assistant" {
+            continue;
+        }
+        let content = truncate_chars(turn.content.trim(), 16_000);
+        if content.is_empty() {
+            continue;
+        }
+        messages.push(json!({ "role": role, "content": content }));
+    }
+
+    messages.push(json!({ "role": "user", "content": question }));
+
+    let preferred_model = openrouter_model.trim();
+    let mut candidates: Vec<String> = vec![preferred_model.to_string()];
+    for fallback in [
+        "openai/gpt-4o-mini",
+        "google/gemini-2.0-flash-001",
+        "anthropic/claude-3.5-haiku",
+    ] {
+        if fallback != preferred_model {
+            candidates.push(fallback.to_string());
+        }
+    }
+
+    let mut last_error = String::new();
+    for candidate in &candidates {
+        match openrouter_chat_completion_with_budget_retry(
+            openrouter_api_key,
+            candidate,
+            &messages,
+            0.35,
+            max_tokens,
+        ) {
+            Ok(reply) => return Ok(reply.trim().to_string()),
+            Err(error) => {
+                last_error = format!("model `{candidate}` failed: {error}");
+                let lower = error.to_lowercase();
+                let should_try_next = lower.contains("not available in your region")
+                    || lower.contains("no endpoints found")
+                    || lower.contains("model not found");
+                if !should_try_next {
+                    return Err(last_error);
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "all candidate models failed. Last error: {last_error}. Please change model in Settings."
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionQaTurn {
+    role: String,
+    content: String,
+}
+
+#[tauri::command]
+fn ask_session_question(
+    id: String,
+    question: String,
+    open_router_api_key: String,
+    open_router_model: String,
+    open_router_max_tokens: u32,
+    chat_history: Option<Vec<SessionQaTurn>>,
+) -> Result<String, String> {
+    if open_router_api_key.trim().is_empty() {
+        return Err("OpenRouter API key is empty".to_string());
+    }
+    if open_router_model.trim().is_empty() {
+        return Err("OpenRouter model is empty".to_string());
+    }
+
+    let q = question.trim();
+    if q.is_empty() {
+        return Err("Question is empty".to_string());
+    }
+    if q.len() > 8_000 {
+        return Err("Question is too long (max 8000 characters)".to_string());
+    }
+
+    let meeting_context = build_session_qa_context(id.trim())?;
+    let history = chat_history.unwrap_or_default();
+
+    let max_tokens = if open_router_max_tokens == 0 {
+        8192
+    } else {
+        open_router_max_tokens
+    };
+
+    call_openrouter_session_qa(
+        open_router_api_key.trim(),
+        open_router_model.trim(),
+        &meeting_context,
+        &history,
+        q,
+        max_tokens,
+    )
 }
 
 fn knowledge_base_dir() -> Result<PathBuf, String> {
@@ -2179,6 +2594,7 @@ fn generate_session_analysis(
     id: String,
     open_router_api_key: String,
     open_router_model: String,
+    open_router_max_tokens: u32,
 ) -> Result<String, String> {
     if open_router_api_key.trim().is_empty() {
         return Err("OpenRouter API key is empty".to_string());
@@ -2186,6 +2602,12 @@ fn generate_session_analysis(
     if open_router_model.trim().is_empty() {
         return Err("OpenRouter model is empty".to_string());
     }
+
+    let max_tokens = if open_router_max_tokens == 0 {
+        8192
+    } else {
+        open_router_max_tokens
+    };
 
     let capture_dir = resolve_capture_dir_for_id(&id)
         .ok_or_else(|| format!("capture session not found for id: {id}"))?;
@@ -2199,6 +2621,7 @@ fn generate_session_analysis(
         open_router_model.trim(),
         transcript.trim(),
         &image_data_urls,
+        max_tokens,
     )?;
 
     let write = |name: &str, data: &str| -> Result<(), String> {
@@ -2552,6 +2975,7 @@ fn main() {
             get_capture_paused,
             transcribe_session_audio,
             generate_session_analysis,
+            ask_session_question,
             get_session_data,
             list_capture_sessions,
             get_knowledge_graph,
