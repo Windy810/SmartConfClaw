@@ -332,6 +332,11 @@ export async function askSessionQuestion(
 	openRouterApiKey: string,
 	openRouterModel: string,
 	openRouterMaxTokens: number,
+	options: {
+		useWebSearch: boolean;
+		usePriorSessions: boolean;
+		tavilyApiKey: string;
+	},
 	chatHistory?: SessionQaTurn[],
 ): Promise<string> {
 	if (!isTauriRuntime()) {
@@ -344,6 +349,9 @@ export async function askSessionQuestion(
 		openRouterApiKey,
 		openRouterModel,
 		openRouterMaxTokens,
+		useWebSearch: options.useWebSearch,
+		usePriorSessions: options.usePriorSessions,
+		tavilyApiKey: options.tavilyApiKey,
 		chatHistory: chatHistory ?? null,
 	});
 }

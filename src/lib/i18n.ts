@@ -67,7 +67,7 @@ const en = {
 		"Run AI analysis to discover related papers and articles.",
 	"viewer.sessionAskTitle": "Ask about this session",
 	"viewer.sessionAskHint":
-		"Uses OpenRouter with this session’s transcript, AI summary, timeline segments, and extracted concepts. Replies stay grounded in this meeting only.",
+		"OpenRouter + this session’s transcript, summary, timeline, and concepts. Use the toggles below to add web search (Tavily) or other local sessions.",
 	"viewer.sessionAskClear": "Clear chat",
 	"viewer.sessionAskWebOnly":
 		"Session Q&A runs in the desktop app (Tauri); the web preview cannot call OpenRouter from here.",
@@ -82,6 +82,17 @@ const en = {
 	"viewer.sessionAskNoKey":
 		"OpenRouter API key is empty. Add it under Settings to ask questions.",
 	"viewer.sessionAskError": "Could not get an answer: {message}",
+	"viewer.sessionAskWebSearch": "Web search",
+	"viewer.sessionAskPriorSessions": "Prior sessions",
+	"viewer.sessionAskWebSearchHint":
+		"Web: Tavily snippets are appended (configure API key in Settings).",
+	"viewer.sessionAskWebSearchOffHint": "Web: off — answers use local context only.",
+	"viewer.sessionAskPriorSessionsHint":
+		"Prior: other indexed sessions’ summaries/transcripts are included as background.",
+	"viewer.sessionAskPriorSessionsOffHint":
+		"Prior: off — only the current session is used as meeting context.",
+	"viewer.sessionAskWebNeedsTavily":
+		"Web search is on but the Tavily API key is empty. Add it under Settings → OpenRouter, or turn off Web search.",
 
 	// GraphViewer
 	"graph.title": "Knowledge Graph",
@@ -180,6 +191,9 @@ const en = {
 	"settings.openRouterMaxTokens": "Max output tokens",
 	"settings.openRouterMaxTokensDesc":
 		"Caps each OpenRouter completion (default 8192). Some models default to very large limits and trigger credit errors—lower this if needed. If the API returns “can only afford N”, the app retries once with that budget automatically.",
+	"settings.tavilyApiKey": "Tavily API key (session Q&A web search)",
+	"settings.tavilyApiKeyDesc":
+		"Optional. Get a key at tavily.com — used when you enable “Web search” under session Q&A. Stored locally like other keys.",
 	"settings.saveOpenRouterConfig": "Save OpenRouter Config",
 	"settings.storedLocally": "Stored locally for prototype",
 	"settings.persistentZustand": "Persistent via Zustand",
@@ -263,7 +277,7 @@ const zh: Record<string, string> = {
 	"viewer.relatedPapersEmpty": "运行 AI 分析以发现相关论文与文章。",
 	"viewer.sessionAskTitle": "针对本场会议提问",
 	"viewer.sessionAskHint":
-		"通过 OpenRouter 使用本会话的转写全文、AI 摘要、时间轴片段与已提取概念作答，回答仅依据本场内容。",
+		"通过 OpenRouter 使用本场转写、摘要、时间轴与概念。下方开关可开启联网检索（Tavily）或纳入其它本地会议摘要。",
 	"viewer.sessionAskClear": "清空对话",
 	"viewer.sessionAskWebOnly":
 		"针对会话的问答需在桌面版（Tauri）中使用；网页预览无法在此调用 OpenRouter。",
@@ -275,6 +289,17 @@ const zh: Record<string, string> = {
 	"viewer.sessionAskSend": "提问",
 	"viewer.sessionAskNoKey": "尚未填写 OpenRouter API 密钥，请先在「设置」中配置。",
 	"viewer.sessionAskError": "无法获取回答：{message}",
+	"viewer.sessionAskWebSearch": "联网检索",
+	"viewer.sessionAskPriorSessions": "其它会议",
+	"viewer.sessionAskWebSearchHint":
+		"联网：将附加 Tavily 检索摘要（需在设置中填写 Tavily 密钥）。",
+	"viewer.sessionAskWebSearchOffHint": "联网：已关闭，仅使用本地上下文。",
+	"viewer.sessionAskPriorSessionsHint":
+		"其它会议：会并入已索引会话的摘要/转写片段作为参考。",
+	"viewer.sessionAskPriorSessionsOffHint":
+		"其它会议：已关闭，仅当前会话作为会议依据。",
+	"viewer.sessionAskWebNeedsTavily":
+		"已开启联网检索，但尚未填写 Tavily API 密钥。请在「设置」OpenRouter 卡片中填写并保存，或关闭「联网检索」。",
 
 	// GraphViewer
 	"graph.title": "知识图谱",
@@ -367,6 +392,9 @@ const zh: Record<string, string> = {
 	"settings.openRouterMaxTokens": "单次回复最大 token 数",
 	"settings.openRouterMaxTokensDesc":
 		"限制每次 OpenRouter 补全的上限（默认 8192）。部分模型默认上限很大，容易触发余额不足；可调小。若接口提示 “can only afford N”，应用会自动按该数值重试一次。",
+	"settings.tavilyApiKey": "Tavily API 密钥（会话问答联网）",
+	"settings.tavilyApiKeyDesc":
+		"选填。在 tavily.com 申请，用于在「针对本场提问」中开启「联网检索」时拉取网页摘要；与其它密钥一样仅存本地。",
 	"settings.saveOpenRouterConfig": "保存 OpenRouter 配置",
 	"settings.storedLocally": "原型阶段，本地存储",
 	"settings.persistentZustand": "通过 Zustand 持久化",

@@ -29,6 +29,8 @@ export interface AppSettings {
 	openRouterApiKey: string;
 	/** Upper bound on completion tokens sent to OpenRouter (avoids huge model defaults on tight credits). */
 	openRouterMaxTokens: number;
+	/** Tavily API key for optional web search in session Q&A (https://tavily.com). */
+	tavilyApiKey: string;
 	captureSourceMode: CaptureSourceMode;
 	/** 1-based display index (matches system picker / `screencapture -D`). */
 	captureDisplayIndex: number;
@@ -55,6 +57,7 @@ interface SettingsState extends AppSettings {
 	setOpenRouterModel: (model: string) => void;
 	setOpenRouterApiKey: (apiKey: string) => void;
 	setOpenRouterMaxTokens: (maxTokens: number) => void;
+	setTavilyApiKey: (apiKey: string) => void;
 	setCaptureSourceMode: (mode: CaptureSourceMode) => void;
 	setCaptureDisplayIndex: (index: number) => void;
 	setSilentCaptureMinimizeMain: (value: boolean) => void;
@@ -80,6 +83,7 @@ const defaultSettings: AppSettings = {
 	openRouterModel: "minimax/minimax-m2.5-chat",
 	openRouterApiKey: "",
 	openRouterMaxTokens: 8192,
+	tavilyApiKey: "",
 	captureSourceMode: "region",
 	captureDisplayIndex: 1,
 	silentCaptureMinimizeMain: true,
@@ -119,6 +123,7 @@ export const useSettingsStore = create<SettingsState>()(
 						? Math.max(256, Math.min(131_072, Math.floor(maxTokens)))
 						: 8192,
 				}),
+			setTavilyApiKey: (apiKey) => set({ tavilyApiKey: apiKey }),
 			setCaptureSourceMode: (mode) => set({ captureSourceMode: mode }),
 			setCaptureDisplayIndex: (index) =>
 				set({
@@ -151,6 +156,7 @@ export const useSettingsStore = create<SettingsState>()(
 				openRouterModel: state.openRouterModel,
 				openRouterApiKey: state.openRouterApiKey,
 				openRouterMaxTokens: state.openRouterMaxTokens,
+				tavilyApiKey: state.tavilyApiKey,
 				captureSourceMode: state.captureSourceMode,
 				captureDisplayIndex: state.captureDisplayIndex,
 				silentCaptureMinimizeMain: state.silentCaptureMinimizeMain,

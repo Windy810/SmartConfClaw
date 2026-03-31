@@ -1437,7 +1437,8 @@ fn truncate_chars(s: &str, max_bytes: usize) -> String {
     )
 }
 
-fn build_session_qa_context(id: &str) -> Result<String, String> {
+/// `minimum_ctx_bytes`: when > 0, require at least this many bytes of assembled context (stricter grounding).
+fn build_session_qa_context(id: &str, minimum_ctx_bytes: usize) -> Result<String, String> {
     let capture_dir = resolve_capture_dir_for_id(id).ok_or_else(|| {
         format!(
             "No local capture folder found for `{id}`. Sync the session or check Screenshot Directory in Settings."
@@ -1521,7 +1522,13 @@ fn build_session_qa_context(id: &str) -> Result<String, String> {
     }
 
     let ctx = parts.join("\n");
-    if ctx.len() < 120 {
+    if ctx.len() < 20 {
+        return Err(
+            "Not enough meeting text in this session. Run Transcribe and/or Generate AI first."
+                .to_string(),
+        );
+    }
+    if minimum_ctx_bytes > 0 && ctx.len() < minimum_ctx_bytes {
         return Err(
             "Not enough meeting text in this session. Run Transcribe and/or Generate AI first."
                 .to_string(),
@@ -1530,18 +1537,187 @@ fn build_session_qa_context(id: &str) -> Result<String, String> {
     Ok(ctx)
 }
 
+/// Summaries (or transcript excerpts) from other indexed sessions in `sessions_index.json`.
+fn build_prior_sessions_qa_context(current_id: &str, max_total_bytes: usize) -> String {
+    let Ok(kb_dir) = knowledge_base_dir() else {
+        return String::new();
+    };
+    let index_path = kb_dir.join("sessions_index.json");
+    let raw = fs::read_to_string(&index_path).unwrap_or_else(|_| "[]".to_string());
+    let arr: Vec<Value> = serde_json::from_str(&raw).unwrap_or_default();
+    let mut out = String::new();
+    for entry in arr {
+        let sid = entry.get("id").and_then(Value::as_str).unwrap_or("");
+        if sid.is_empty() || sid == current_id {
+            continue;
+        }
+        let Some(dir_str) = entry.get("captureDir").and_then(Value::as_str) else {
+            continue;
+        };
+        let dir = PathBuf::from(dir_str);
+        if !dir.is_dir() {
+            continue;
+        }
+        let mut body = String::new();
+        if let Ok(sum) = fs::read_to_string(dir.join("summary.txt")) {
+            let s = sum.trim();
+            if !s.is_empty() {
+                body.push_str(&truncate_chars(s, 4_000));
+            }
+        }
+        if body.is_empty() {
+            if let Ok(tr) = fs::read_to_string(dir.join("transcript.txt")) {
+                let t = tr.trim();
+                if !t.is_empty() {
+                    body.push_str(&truncate_chars(t, 2_500));
+                }
+            }
+        }
+        if body.is_empty() {
+            continue;
+        }
+        let block = format!("### Other session `{sid}`\n{body}\n\n");
+        if out.len() + block.len() > max_total_bytes {
+            break;
+        }
+        out.push_str(&block);
+    }
+    out
+}
+
+fn tavily_search_snippets(api_key: &str, query: &str) -> Result<String, String> {
+    let key = api_key.trim();
+    if key.is_empty() {
+        return Err("Tavily API key is empty. Add it in Settings to use web search.".to_string());
+    }
+    let q: String = query.chars().take(500).collect();
+    if q.trim().is_empty() {
+        return Ok(String::new());
+    }
+    let body = json!({
+        "api_key": key,
+        "query": q,
+        "search_depth": "basic",
+        "max_results": 6,
+        "include_answer": true
+    })
+    .to_string();
+
+    let tmp_dir = env::temp_dir();
+    let payload_path = tmp_dir.join(format!(
+        "scholarclaw-tavily-{}.json",
+        current_unix_timestamp().unwrap_or(0)
+    ));
+    fs::write(&payload_path, body.as_bytes())
+        .map_err(|e| format!("failed to write Tavily payload: {e}"))?;
+
+    let output = Command::new("curl")
+        .arg("-sS")
+        .arg("-X")
+        .arg("POST")
+        .arg("https://api.tavily.com/search")
+        .arg("-H")
+        .arg("Content-Type: application/json")
+        .arg("-d")
+        .arg(format!("@{}", payload_path.to_string_lossy()))
+        .output()
+        .map_err(|e| format!("failed to call Tavily: {e}"))?;
+
+    let _ = fs::remove_file(&payload_path);
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(format!("Tavily request failed: {stderr}"));
+    }
+
+    let resp_str = String::from_utf8_lossy(&output.stdout).to_string();
+    let outer: Value = serde_json::from_str(&resp_str)
+        .map_err(|e| format!("failed to parse Tavily JSON: {e}"))?;
+
+    if let Some(err) = outer.get("detail").and_then(Value::as_str) {
+        return Err(format!("Tavily API error: {err}"));
+    }
+
+    let mut snippets = String::new();
+    if let Some(ans) = outer.get("answer").and_then(Value::as_str) {
+        if !ans.trim().is_empty() {
+            snippets.push_str("Summary (Tavily): ");
+            snippets.push_str(ans.trim());
+            snippets.push_str("\n\n");
+        }
+    }
+    if let Some(results) = outer.get("results").and_then(Value::as_array) {
+        for (i, r) in results.iter().take(6).enumerate() {
+            let title = r.get("title").and_then(Value::as_str).unwrap_or("");
+            let url = r.get("url").and_then(Value::as_str).unwrap_or("");
+            let content = r
+                .get("content")
+                .and_then(Value::as_str)
+                .or_else(|| r.get("snippet").and_then(Value::as_str))
+                .unwrap_or("");
+            if title.is_empty() && content.is_empty() {
+                continue;
+            }
+            snippets.push_str(&format!(
+                "{}. {}\nURL: {}\n{}\n\n",
+                i + 1,
+                title,
+                url,
+                truncate_chars(content, 1_200)
+            ));
+        }
+    }
+    if snippets.trim().is_empty() {
+        return Err("Tavily returned no results for this query.".to_string());
+    }
+    Ok(snippets.trim().to_string())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionQaTurn {
+    role: String,
+    content: String,
+}
+
+fn session_qa_system_instructions(use_web: bool, use_prior: bool) -> &'static str {
+    match (use_web, use_prior) {
+        (true, true) => {
+            "You are a careful research assistant. Use the PRIMARY SESSION block as the main source for questions about this meeting. \
+OTHER SESSIONS are earlier local captures—use them only as background and never attribute their content to the current session. \
+WEB SNIPPETS come from a live web search—they may be imperfect; prefer PRIMARY when they conflict, and mention uncertainty. \
+Prefer the user's language. Be concise."
+        }
+        (true, false) => {
+            "You are a careful research assistant. Use the PRIMARY SESSION block as the main source. \
+WEB SNIPPETS are from web search—verify against the meeting when relevant and note if the web is used for facts not in the session. \
+Prefer the user's language. Be concise."
+        }
+        (false, true) => {
+            "You are a careful research meeting assistant. Use ONLY the PRIMARY SESSION and OTHER SESSIONS blocks below—no outside knowledge for facts about what was said in meetings. \
+OTHER SESSIONS are not the current meeting; label which session you infer from. If something is missing, say so. Prefer the user's language."
+        }
+        (false, false) => {
+            "You are a careful research meeting assistant. Answer using ONLY the PRIMARY SESSION context below. \
+If the context does not contain enough information, say so clearly. Prefer the user's language. Be concise."
+        }
+    }
+}
+
 fn call_openrouter_session_qa(
     openrouter_api_key: &str,
     openrouter_model: &str,
-    meeting_context: &str,
+    full_context: &str,
     chat_history: &[SessionQaTurn],
     question: &str,
     max_tokens: u32,
+    use_web: bool,
+    use_prior: bool,
 ) -> Result<String, String> {
     let system_text = format!(
-        "You are a careful research meeting assistant. Answer using ONLY the meeting context below. \
-If the context does not contain enough information, say so clearly and suggest what is missing (e.g. run transcription). \
-Prefer the same language as the user's question. Be concise but precise.\n\n--- Meeting context ---\n{meeting_context}"
+        "{}\n\n--- Context ---\n{}",
+        session_qa_system_instructions(use_web, use_prior),
+        full_context
     );
 
     let mut messages: Vec<Value> = vec![json!({
@@ -1603,13 +1779,6 @@ Prefer the same language as the user's question. Be concise but precise.\n\n--- 
     ))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SessionQaTurn {
-    role: String,
-    content: String,
-}
-
 #[tauri::command]
 fn ask_session_question(
     id: String,
@@ -1617,6 +1786,9 @@ fn ask_session_question(
     open_router_api_key: String,
     open_router_model: String,
     open_router_max_tokens: u32,
+    use_web_search: bool,
+    use_prior_sessions: bool,
+    tavily_api_key: String,
     chat_history: Option<Vec<SessionQaTurn>>,
 ) -> Result<String, String> {
     if open_router_api_key.trim().is_empty() {
@@ -1634,7 +1806,36 @@ fn ask_session_question(
         return Err("Question is too long (max 8000 characters)".to_string());
     }
 
-    let meeting_context = build_session_qa_context(id.trim())?;
+    if use_web_search && tavily_api_key.trim().is_empty() {
+        return Err(
+            "Web search is enabled but Tavily API key is empty. Add it in Settings (Tavily) or turn off web search."
+                .to_string(),
+        );
+    }
+
+    let min_ctx = if use_web_search { 0usize } else { 120usize };
+    let primary = build_session_qa_context(id.trim(), min_ctx)?;
+
+    let mut full = format!("## PRIMARY SESSION (current)\n{primary}");
+
+    if use_prior_sessions {
+        let prior = build_prior_sessions_qa_context(id.trim(), 48_000);
+        if prior.trim().is_empty() {
+            full.push_str(
+                "\n\n## OTHER SESSIONS\n(no other indexed sessions with summary or transcript found)\n",
+            );
+        } else {
+            full.push_str("\n\n## OTHER SESSIONS (prior local captures)\n");
+            full.push_str(&prior);
+        }
+    }
+
+    if use_web_search {
+        let web = tavily_search_snippets(tavily_api_key.trim(), q)?;
+        full.push_str("\n\n## WEB SEARCH SNIPPETS (third party)\n");
+        full.push_str(&web);
+    }
+
     let history = chat_history.unwrap_or_default();
 
     let max_tokens = if open_router_max_tokens == 0 {
@@ -1646,10 +1847,12 @@ fn ask_session_question(
     call_openrouter_session_qa(
         open_router_api_key.trim(),
         open_router_model.trim(),
-        &meeting_context,
+        &full,
         &history,
         q,
         max_tokens,
+        use_web_search,
+        use_prior_sessions,
     )
 }
 

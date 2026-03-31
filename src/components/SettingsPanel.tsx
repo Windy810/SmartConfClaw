@@ -77,6 +77,7 @@ export function SettingsPanel(): JSX.Element {
 	const openRouterMaxTokens = useSettingsStore(
 		(state) => state.openRouterMaxTokens,
 	);
+	const tavilyApiKey = useSettingsStore((state) => state.tavilyApiKey);
 	const setModelProvider = useSettingsStore((state) => state.setModelProvider);
 	const setScreenshotDirectory = useSettingsStore(
 		(state) => state.setScreenshotDirectory,
@@ -110,6 +111,7 @@ export function SettingsPanel(): JSX.Element {
 	const setOpenRouterMaxTokens = useSettingsStore(
 		(state) => state.setOpenRouterMaxTokens,
 	);
+	const setTavilyApiKey = useSettingsStore((state) => state.setTavilyApiKey);
 	const resetDefaults = useSettingsStore((state) => state.resetDefaults);
 
 	const [draftDirectory, setDraftDirectory] =
@@ -136,6 +138,8 @@ export function SettingsPanel(): JSX.Element {
 		useState<string>(openRouterApiKey);
 	const [draftOpenRouterMaxTokens, setDraftOpenRouterMaxTokens] =
 		useState<string>(String(openRouterMaxTokens));
+	const [draftTavilyApiKey, setDraftTavilyApiKey] =
+		useState<string>(tavilyApiKey);
 	const [audioDevices, setAudioDevices] = useState<AudioInputDevice[]>([]);
 	const [audioListError, setAudioListError] = useState<string | null>(null);
 
@@ -199,6 +203,10 @@ export function SettingsPanel(): JSX.Element {
 	useEffect(() => {
 		setDraftOpenRouterMaxTokens(String(openRouterMaxTokens));
 	}, [openRouterMaxTokens]);
+
+	useEffect(() => {
+		setDraftTavilyApiKey(tavilyApiKey);
+	}, [tavilyApiKey]);
 
 	const orphanSpecs = useMemo(
 		() =>
@@ -760,6 +768,26 @@ export function SettingsPanel(): JSX.Element {
 						</p>
 					</div>
 
+					<div className="space-y-2">
+						<label
+							htmlFor="tavily-apikey"
+							className="text-sm font-medium text-zinc-700 dark:text-zinc-200"
+						>
+							{t("settings.tavilyApiKey")}
+						</label>
+						<input
+							id="tavily-apikey"
+							type="password"
+							value={draftTavilyApiKey}
+							onChange={(event) => setDraftTavilyApiKey(event.target.value)}
+							className={inputCls}
+							placeholder="tvly-…"
+						/>
+						<p className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+							{t("settings.tavilyApiKeyDesc")}
+						</p>
+					</div>
+
 					<div className="flex items-center gap-2">
 						<Button
 							size="sm"
@@ -767,6 +795,7 @@ export function SettingsPanel(): JSX.Element {
 							onClick={() => {
 								setOpenRouterModel(draftOpenRouterModel);
 								setOpenRouterApiKey(draftOpenRouterApiKey);
+								setTavilyApiKey(draftTavilyApiKey);
 								const mt = Number.parseInt(
 									draftOpenRouterMaxTokens.trim(),
 									10,

@@ -18,6 +18,21 @@ interface ChatMessage extends SessionQaTurn {
 	id: string;
 }
 
+const SESSION_QA_OPTS_KEY = "scholarclaw-sessionqa-opts-v1";
+
+function loadPersistedQaOpts(): { web: boolean; prior: boolean } {
+	try {
+		const raw = localStorage.getItem(SESSION_QA_OPTS_KEY);
+		if (!raw) {
+			return { web: false, prior: false };
+		}
+		const j = JSON.parse(raw) as { web?: boolean; prior?: boolean };
+		return { web: Boolean(j.web), prior: Boolean(j.prior) };
+	} catch {
+		return { web: false, prior: false };
+	}
+}
+
 function newId(): string {
 	return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
@@ -27,6 +42,10 @@ export function SessionQaChat({ sessionId }: SessionQaChatProps): JSX.Element {
 	const openRouterApiKey = useSettingsStore((s) => s.openRouterApiKey);
 	const openRouterModel = useSettingsStore((s) => s.openRouterModel);
 	const openRouterMaxTokens = useSettingsStore((s) => s.openRouterMaxTokens);
+	const tavilyApiKey = useSettingsStore((s) => s.tavilyApiKey);
+	const initialOpts = loadPersistedQaOpts();
+	const [useWebSearch, setUseWebSearch] = useState(initialOpts.web);
+	const [usePriorSessions, setUsePriorSessions] = useState(initialOpts.prior);
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [draft, setDraft] = useState("");
 	const [loading, setLoading] = useState(false);
@@ -36,6 +55,13 @@ export function SessionQaChat({ sessionId }: SessionQaChatProps): JSX.Element {
 		setMessages([]);
 		setDraft("");
 	}, [sessionId]);
+
+	useEffect(() => {
+		localStorage.setItem(
+			SESSION_QA_OPTS_KEY,
+			JSON.stringify({ web: useWebSearch, prior: usePriorSessions }),
+		);
+	}, [useWebSearch, usePriorSessions]);
 
 	useEffect(() => {
 		bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -60,6 +86,17 @@ export function SessionQaChat({ sessionId }: SessionQaChatProps): JSX.Element {
 			]);
 			return;
 		}
+		if (useWebSearch && !tavilyApiKey.trim()) {
+			setMessages((prev) => [
+				...prev,
+				{
+					id: newId(),
+					role: "assistant",
+					content: t("viewer.sessionAskWebNeedsTavily"),
+				},
+			]);
+			return;
+		}
 
 		const history: SessionQaTurn[] = messages.map(({ role, content }) => ({
 			role,
@@ -80,6 +117,11 @@ export function SessionQaChat({ sessionId }: SessionQaChatProps): JSX.Element {
 				openRouterApiKey,
 				openRouterModel,
 				openRouterMaxTokens,
+				{
+					useWebSearch,
+					usePriorSessions,
+					tavilyApiKey: tavilyApiKey.trim(),
+				},
 				history,
 			);
 			setMessages((prev) => [
@@ -180,6 +222,39 @@ export function SessionQaChat({ sessionId }: SessionQaChatProps): JSX.Element {
 					disabled={loading || !isTauriRuntime()}
 					className="w-full resize-none rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-zinc-400/30 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-600"
 				/>
+
+				<div className="flex flex-wrap gap-2">
+					<Button
+						type="button"
+						size="sm"
+						variant={useWebSearch ? "default" : "outline"}
+						className="text-xs"
+						disabled={!isTauriRuntime()}
+						onClick={() => setUseWebSearch((v) => !v)}
+					>
+						{t("viewer.sessionAskWebSearch")}
+					</Button>
+					<Button
+						type="button"
+						size="sm"
+						variant={usePriorSessions ? "default" : "outline"}
+						className="text-xs"
+						disabled={!isTauriRuntime()}
+						onClick={() => setUsePriorSessions((v) => !v)}
+					>
+						{t("viewer.sessionAskPriorSessions")}
+					</Button>
+				</div>
+				<p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+					{useWebSearch
+						? t("viewer.sessionAskWebSearchHint")
+						: t("viewer.sessionAskWebSearchOffHint")}
+					{" · "}
+					{usePriorSessions
+						? t("viewer.sessionAskPriorSessionsHint")
+						: t("viewer.sessionAskPriorSessionsOffHint")}
+				</p>
+
 				<Button
 					type="submit"
 					size="sm"
