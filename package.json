@@ -12,23 +12,23 @@
   },
   "dependencies": {
     "@radix-ui/react-tooltip": "^1.2.8",
-    "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "dagre": "^0.8.5",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
     "reactflow": "^11.11.4",
-    "zustand": "^5.0.8"
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.8.4",
+    "@tailwindcss/postcss": "^4.2.2",
+    "@tauri-apps/cli": "^2.10.1",
     "@types/dagre": "^0.7.54",
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.1",
-    "autoprefixer": "^10.4.20",
-    "postcss": "^8.4.49",
-    "tailwindcss": "^3.4.16",
-    "typescript": "^5.6.3",
-    "vite": "^5.4.11"
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "postcss": "^8.5.8",
+    "tailwindcss": "^4",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.3"
   }
 }
