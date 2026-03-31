@@ -67,7 +67,7 @@ const en = {
 		"Run AI analysis to discover related papers and articles.",
 	"viewer.sessionAskTitle": "Ask about this session",
 	"viewer.sessionAskHint":
-		"OpenRouter + this session’s transcript, summary, timeline, and concepts. Use the toggles below to add web search (Tavily) or other local sessions.",
+		"OpenRouter + this session’s transcript, summary, timeline, and concepts. Use the toggles below to add web search (Tavily) or other local sessions. Chat history is saved automatically in this browser (per session).",
 	"viewer.sessionAskClear": "Clear chat",
 	"viewer.sessionAskWebOnly":
 		"Session Q&A runs in the desktop app (Tauri); the web preview cannot call OpenRouter from here.",
@@ -79,6 +79,8 @@ const en = {
 	"viewer.sessionAskPlaceholder":
 		"e.g. What main method did they compare against the baseline?",
 	"viewer.sessionAskSend": "Ask",
+	"viewer.sessionAskCopy": "Copy",
+	"viewer.sessionAskCopied": "Copied",
 	"viewer.sessionAskNoKey":
 		"OpenRouter API key is empty. Add it under Settings to ask questions.",
 	"viewer.sessionAskError": "Could not get an answer: {message}",
@@ -277,7 +279,7 @@ const zh: Record<string, string> = {
 	"viewer.relatedPapersEmpty": "运行 AI 分析以发现相关论文与文章。",
 	"viewer.sessionAskTitle": "针对本场会议提问",
 	"viewer.sessionAskHint":
-		"通过 OpenRouter 使用本场转写、摘要、时间轴与概念。下方开关可开启联网检索（Tavily）或纳入其它本地会议摘要。",
+		"通过 OpenRouter 使用本场转写、摘要、时间轴与概念。下方开关可开启联网检索（Tavily）或纳入其它本地会议摘要。对话记录会自动保存在本浏览器（按会话区分）。",
 	"viewer.sessionAskClear": "清空对话",
 	"viewer.sessionAskWebOnly":
 		"针对会话的问答需在桌面版（Tauri）中使用；网页预览无法在此调用 OpenRouter。",
@@ -287,6 +289,8 @@ const zh: Record<string, string> = {
 	"viewer.sessionAskThinking": "正在思考…",
 	"viewer.sessionAskPlaceholder": "例如：主讲人提出的核心方法是什么？",
 	"viewer.sessionAskSend": "提问",
+	"viewer.sessionAskCopy": "复制",
+	"viewer.sessionAskCopied": "已复制",
 	"viewer.sessionAskNoKey": "尚未填写 OpenRouter API 密钥，请先在「设置」中配置。",
 	"viewer.sessionAskError": "无法获取回答：{message}",
 	"viewer.sessionAskWebSearch": "联网检索",

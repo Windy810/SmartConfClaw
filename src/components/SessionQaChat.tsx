@@ -7,6 +7,7 @@ import {
 	type SessionQaTurn,
 } from "../lib/tauri";
 import { useSettingsStore } from "../store/settingsStore";
+import { SessionQaMarkdown } from "./SessionQaMarkdown";
 import { Button } from "./ui/button";
 import { ScrollArea } from "./ui/scroll-area";
 
@@ -19,6 +20,81 @@ interface ChatMessage extends SessionQaTurn {
 }
 
 const SESSION_QA_OPTS_KEY = "scholarclaw-sessionqa-opts-v1";
+const CHAT_HISTORY_PREFIX = "scholarclaw-sessionqa-chat-v1:";
+/** Avoid blowing localStorage quota; keep most recent turns. */
+const MAX_PERSISTED_MESSAGES = 100;
+
+function chatStorageKey(sessionId: string): string {
+	return `${CHAT_HISTORY_PREFIX}${sessionId}`;
+}
+
+function parseStoredMessages(raw: string): ChatMessage[] {
+	try {
+		const data = JSON.parse(raw) as unknown;
+		if (!Array.isArray(data)) {
+			return [];
+		}
+		const out: ChatMessage[] = [];
+		for (const item of data) {
+			if (!item || typeof item !== "object") {
+				continue;
+			}
+			const o = item as Record<string, unknown>;
+			const id = typeof o.id === "string" ? o.id : "";
+			const role = o.role;
+			const content = typeof o.content === "string" ? o.content : "";
+			if (!id || (role !== "user" && role !== "assistant")) {
+				continue;
+			}
+			out.push({ id, role, content });
+		}
+		return out.length > MAX_PERSISTED_MESSAGES
+			? out.slice(-MAX_PERSISTED_MESSAGES)
+			: out;
+	} catch {
+		return [];
+	}
+}
+
+function loadChatHistory(sessionId: string): ChatMessage[] {
+	if (!sessionId.trim()) {
+		return [];
+	}
+	try {
+		const raw = localStorage.getItem(chatStorageKey(sessionId));
+		if (!raw) {
+			return [];
+		}
+		return parseStoredMessages(raw);
+	} catch {
+		return [];
+	}
+}
+
+function saveChatHistory(sessionId: string, messages: ChatMessage[]): void {
+	if (!sessionId.trim()) {
+		return;
+	}
+	try {
+		const trimmed =
+			messages.length > MAX_PERSISTED_MESSAGES
+				? messages.slice(-MAX_PERSISTED_MESSAGES)
+				: messages;
+		const payload = trimmed.map(({ id, role, content }) => ({
+			id,
+			role,
+			content,
+		}));
+		const key = chatStorageKey(sessionId);
+		if (payload.length === 0) {
+			localStorage.removeItem(key);
+		} else {
+			localStorage.setItem(key, JSON.stringify(payload));
+		}
+	} catch {
+		// QuotaExceededError or private mode — ignore
+	}
+}
 
 function loadPersistedQaOpts(): { web: boolean; prior: boolean } {
 	try {
@@ -46,15 +122,24 @@ export function SessionQaChat({ sessionId }: SessionQaChatProps): JSX.Element {
 	const initialOpts = loadPersistedQaOpts();
 	const [useWebSearch, setUseWebSearch] = useState(initialOpts.web);
 	const [usePriorSessions, setUsePriorSessions] = useState(initialOpts.prior);
-	const [messages, setMessages] = useState<ChatMessage[]>([]);
+	const [messages, setMessages] = useState<ChatMessage[]>(() =>
+		loadChatHistory(sessionId),
+	);
 	const [draft, setDraft] = useState("");
 	const [loading, setLoading] = useState(false);
+	const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 	const bottomRef = useRef<HTMLDivElement | null>(null);
+	const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 	useEffect(() => {
-		setMessages([]);
 		setDraft("");
+		setCopiedMessageId(null);
+		setMessages(loadChatHistory(sessionId));
 	}, [sessionId]);
+
+	useEffect(() => {
+		saveChatHistory(sessionId, messages);
+	}, [sessionId, messages]);
 
 	useEffect(() => {
 		localStorage.setItem(
@@ -66,6 +151,49 @@ export function SessionQaChat({ sessionId }: SessionQaChatProps): JSX.Element {
 	useEffect(() => {
 		bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
 	}, [messages, loading]);
+
+	useEffect(() => {
+		return () => {
+			if (copyResetRef.current) {
+				clearTimeout(copyResetRef.current);
+			}
+		};
+	}, []);
+
+	const handleCopyAssistant = async (messageId: string, text: string): Promise<void> => {
+		try {
+			await navigator.clipboard.writeText(text);
+			setCopiedMessageId(messageId);
+			if (copyResetRef.current) {
+				clearTimeout(copyResetRef.current);
+			}
+			copyResetRef.current = setTimeout(() => {
+				setCopiedMessageId(null);
+				copyResetRef.current = null;
+			}, 2000);
+		} catch {
+			try {
+				const ta = document.createElement("textarea");
+				ta.value = text;
+				ta.style.position = "fixed";
+				ta.style.left = "-9999px";
+				document.body.appendChild(ta);
+				ta.select();
+				document.execCommand("copy");
+				document.body.removeChild(ta);
+				setCopiedMessageId(messageId);
+				if (copyResetRef.current) {
+					clearTimeout(copyResetRef.current);
+				}
+				copyResetRef.current = setTimeout(() => {
+					setCopiedMessageId(null);
+					copyResetRef.current = null;
+				}, 2000);
+			} catch {
+				// ignore
+			}
+		}
+	};
 
 	const handleSubmit = async (
 		event: FormEvent<HTMLFormElement>,
@@ -146,6 +274,7 @@ export function SessionQaChat({ sessionId }: SessionQaChatProps): JSX.Element {
 
 	const handleClear = (): void => {
 		setMessages([]);
+		saveChatHistory(sessionId, []);
 	};
 
 	return (
@@ -189,18 +318,39 @@ export function SessionQaChat({ sessionId }: SessionQaChatProps): JSX.Element {
 						messages.map((m) => (
 							<div
 								key={m.id}
-								className={`rounded-lg px-3 py-2 text-sm leading-relaxed ${
+								className={`rounded-lg px-3 py-2 ${
 									m.role === "user"
 										? "ml-4 bg-zinc-200/80 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100"
 										: "mr-4 border border-zinc-200/80 bg-white text-zinc-700 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
 								}`}
 							>
-								<p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-									{m.role === "user"
-										? t("viewer.sessionAskYou")
-										: t("viewer.sessionAskAssistant")}
-								</p>
-								<p className="whitespace-pre-wrap">{m.content}</p>
+								<div className="mb-1 flex items-center justify-between gap-2">
+									<p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+										{m.role === "user"
+											? t("viewer.sessionAskYou")
+											: t("viewer.sessionAskAssistant")}
+									</p>
+									{m.role === "assistant" ? (
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											className="h-7 shrink-0 px-2 text-[10px] text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
+											onClick={() => void handleCopyAssistant(m.id, m.content)}
+										>
+											{copiedMessageId === m.id
+												? t("viewer.sessionAskCopied")
+												: t("viewer.sessionAskCopy")}
+										</Button>
+									) : null}
+								</div>
+								{m.role === "user" ? (
+									<p className="whitespace-pre-wrap text-sm leading-relaxed">
+										{m.content}
+									</p>
+								) : (
+									<SessionQaMarkdown source={m.content} />
+								)}
 							</div>
 						))
 					)}
