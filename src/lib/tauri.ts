@@ -303,6 +303,23 @@ export async function transcribeSessionAudio(
 	});
 }
 
+export async function refineTranscriptWithVisuals(
+	id: string,
+	openRouterApiKey: string,
+	openRouterModel: string,
+	openRouterMaxTokens: number,
+): Promise<string> {
+	if (!isTauriRuntime()) {
+		return "Web preview mode: transcript visual refine is unavailable.";
+	}
+	return invoke<string>("refine_transcript_with_visuals", {
+		id,
+		openRouterApiKey,
+		openRouterModel,
+		openRouterMaxTokens,
+	});
+}
+
 export async function generateSessionAnalysis(
 	id: string,
 	openRouterApiKey: string,

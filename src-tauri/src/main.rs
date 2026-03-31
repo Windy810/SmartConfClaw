@@ -916,6 +916,49 @@ fn extract_json_block(content: &str) -> String {
     trimmed.to_string()
 }
 
+/// Some vision/chat models emit raw U+0000–U+001F inside JSON string values (e.g. unescaped
+/// newlines in `summary`), which `serde_json` rejects. This pass keeps structure valid while
+/// respecting `\"` and `\\` inside strings.
+fn sanitize_llm_json_payload(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_string = false;
+    let mut escape_next = false;
+    for ch in s.chars() {
+        if ch == '\0' {
+            continue;
+        }
+        if escape_next {
+            out.push(ch);
+            escape_next = false;
+            continue;
+        }
+        if in_string {
+            if ch == '\\' {
+                out.push(ch);
+                escape_next = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+                out.push(ch);
+                continue;
+            }
+            let cp = ch as u32;
+            if cp <= 0x1F && ch != '\t' {
+                out.push(' ');
+                continue;
+            }
+            out.push(ch);
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+        }
+        out.push(ch);
+    }
+    out
+}
+
 fn collect_analysis_images(capture_dir: &PathBuf, max_images: usize) -> Vec<String> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     let start = capture_dir.join("screen-start.png");
@@ -1139,7 +1182,8 @@ Transcript:\n{}",
         .and_then(Value::as_str)
         .ok_or_else(|| "OpenRouter response missing choices[0].message.content".to_string())?;
 
-    let inner_json = extract_json_block(content);
+    let inner_raw = extract_json_block(content);
+    let inner_json = sanitize_llm_json_payload(inner_raw.trim_start_matches('\u{FEFF}'));
     let parsed: Value = serde_json::from_str(&inner_json)
         .map_err(|error| format!("model output is not valid JSON: {error}"))?;
 
@@ -1310,6 +1354,198 @@ fn call_openrouter_analysis(
 
     Err(format!(
         "all candidate models failed. Last error: {last_error}. Please change model in Settings."
+    ))
+}
+
+/// Vision-language refinement: fix ASR using sampled session screenshots (OpenRouter multimodal).
+fn call_openrouter_refine_transcript_request(
+    openrouter_api_key: &str,
+    openrouter_model: &str,
+    transcript_excerpt: &str,
+    image_data_urls: &[String],
+    max_tokens_cap: u32,
+) -> Result<String, String> {
+    let prompt = format!(
+        "You are correcting automatic speech recognition (ASR) for a lecture or meeting.\n\n\
+Attached images are screenshots sampled from the **same session** (slides, shared screen, IDE, etc.).\n\n\
+Task:\n\
+- Use visible on-screen text, slide titles, terminology, formulas, and identifiers to fix **clear ASR errors** \
+(wrong homophones, misheard technical terms, names, numbers that contradict what is shown).\n\
+- Preserve the original language(s) of the transcript. Keep paragraph breaks and chronological flow.\n\
+- Do **not** invent facts not supported by the transcript plus visuals. If uncertain, keep the original wording.\n\
+- Do **not** summarize. Output the **complete** corrected transcript body only.\n\n\
+ASR transcript:\n{}",
+        transcript_excerpt
+    );
+
+    let mut user_content: Vec<Value> = vec![json!({
+        "type": "text",
+        "text": prompt
+    })];
+    for data_url in image_data_urls {
+        user_content.push(json!({
+            "type": "image_url",
+            "image_url": { "url": data_url }
+        }));
+    }
+
+    let max_tokens = clamp_openrouter_max_tokens(max_tokens_cap);
+    let payload = json!({
+      "model": openrouter_model,
+      "messages": [
+        { "role": "system", "content": "Return only the corrected transcript as plain UTF-8 text. No markdown code fences. No preamble or explanation after the text." },
+        { "role": "user", "content": user_content }
+      ],
+      "temperature": 0.12,
+      "max_tokens": max_tokens
+    })
+    .to_string();
+
+    let tmp_dir = env::temp_dir();
+    let payload_path = tmp_dir.join(format!(
+        "scholarclaw-openrouter-refine-tr-{}.json",
+        current_unix_timestamp().unwrap_or(0)
+    ));
+    fs::write(&payload_path, payload.as_bytes())
+        .map_err(|e| format!("failed to write temp payload file: {e}"))?;
+
+    let output = Command::new("curl")
+        .arg("-sS")
+        .arg("-X")
+        .arg("POST")
+        .arg("https://openrouter.ai/api/v1/chat/completions")
+        .arg("-H")
+        .arg("Content-Type: application/json")
+        .arg("-H")
+        .arg(format!("Authorization: Bearer {}", openrouter_api_key))
+        .arg("-d")
+        .arg(format!("@{}", payload_path.to_string_lossy()))
+        .output()
+        .map_err(|error| format!("failed to call OpenRouter: {error}"))?;
+
+    let _ = fs::remove_file(&payload_path);
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(format!("OpenRouter request failed: {stderr}"));
+    }
+
+    let body = String::from_utf8_lossy(&output.stdout).to_string();
+    let outer: Value = serde_json::from_str(&body)
+        .map_err(|error| format!("failed to parse OpenRouter response JSON: {error}"))?;
+
+    if let Some(error_message) = outer
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+    {
+        return Err(format!("OpenRouter API error: {error_message}"));
+    }
+
+    let content = outer
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "OpenRouter response missing choices[0].message.content".to_string())?;
+
+    let mut text = extract_json_block(content).trim().to_string();
+    if text.starts_with("```") {
+        text = extract_json_block(&text).trim().to_string();
+    }
+    if text.is_empty() {
+        return Err("Model returned an empty transcript.".to_string());
+    }
+    Ok(text)
+}
+
+fn call_openrouter_refine_transcript_once(
+    openrouter_api_key: &str,
+    openrouter_model: &str,
+    transcript_excerpt: &str,
+    image_data_urls: &[String],
+    max_tokens: u32,
+) -> Result<String, String> {
+    let mut cap = clamp_openrouter_max_tokens(max_tokens.max(4096));
+    for _ in 0..6 {
+        match call_openrouter_refine_transcript_request(
+            openrouter_api_key,
+            openrouter_model,
+            transcript_excerpt,
+            image_data_urls,
+            cap,
+        ) {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                let lower = e.to_lowercase();
+                let budget_hint = lower.contains("max_tokens")
+                    || lower.contains("credits")
+                    || lower.contains("afford");
+                if budget_hint {
+                    if let Some(aff) = parse_openrouter_affordable_tokens(&e) {
+                        let next = clamp_openrouter_max_tokens(aff.min(cap));
+                        if next < cap {
+                            cap = next;
+                            continue;
+                        }
+                    }
+                }
+                return Err(e);
+            }
+        }
+    }
+    Err(
+        "OpenRouter: could not satisfy max_tokens while refining transcript. Raise max output tokens in Settings."
+            .to_string(),
+    )
+}
+
+fn call_openrouter_refine_transcript(
+    openrouter_api_key: &str,
+    openrouter_model: &str,
+    transcript_excerpt: &str,
+    image_data_urls: &[String],
+    max_tokens: u32,
+) -> Result<(String, String), String> {
+    let preferred_model = openrouter_model.trim();
+    let mut candidates: Vec<String> = vec![preferred_model.to_string()];
+    for fallback in [
+        "openai/gpt-4o-mini",
+        "google/gemini-2.0-flash-001",
+        "anthropic/claude-3.5-haiku",
+    ] {
+        if fallback != preferred_model {
+            candidates.push(fallback.to_string());
+        }
+    }
+
+    let mut last_error = String::new();
+    for candidate in &candidates {
+        match call_openrouter_refine_transcript_once(
+            openrouter_api_key,
+            candidate,
+            transcript_excerpt,
+            image_data_urls,
+            max_tokens,
+        ) {
+            Ok(text) => return Ok((text, candidate.clone())),
+            Err(error) => {
+                last_error = format!("model `{candidate}` failed: {error}");
+                let lower = error.to_lowercase();
+                let should_try_next = lower.contains("not available in your region")
+                    || lower.contains("no endpoints found")
+                    || lower.contains("model not found");
+                if !should_try_next {
+                    return Err(last_error);
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "all candidate models failed. Last error: {last_error}. Use a vision-capable model or change model in Settings."
     ))
 }
 
@@ -2793,6 +3029,90 @@ fn transcribe_session_audio(
 }
 
 #[tauri::command]
+fn refine_transcript_with_visuals(
+    id: String,
+    open_router_api_key: String,
+    open_router_model: String,
+    open_router_max_tokens: u32,
+) -> Result<String, String> {
+    if open_router_api_key.trim().is_empty() {
+        return Err("OpenRouter API key is empty".to_string());
+    }
+    if open_router_model.trim().is_empty() {
+        return Err("OpenRouter model is empty".to_string());
+    }
+
+    if is_capture_running(&id) {
+        return Err(
+            "Capture is still running. Stop capture before refining the transcript.".to_string(),
+        );
+    }
+
+    let capture_dir = resolve_capture_dir_for_id(&id)
+        .ok_or_else(|| format!("capture session not found for id: {id}"))?;
+    let transcript_path = capture_dir.join("transcript.txt");
+    let transcript_raw = fs::read_to_string(&transcript_path)
+        .map_err(|_| "transcript.txt not found. Run Transcribe first.".to_string())?;
+    let transcript_trim = transcript_raw.trim();
+    if transcript_trim.len() < 12 {
+        return Err("Transcript is too short to refine.".to_string());
+    }
+
+    let image_data_urls = collect_analysis_images(&capture_dir, 8);
+    if image_data_urls.is_empty() {
+        return Err(
+            "No screenshots found in this session (need frame-*.png, screen-start.png, or similar). \
+Cannot align transcript with visuals."
+                .to_string(),
+        );
+    }
+
+    if transcript_trim.len() > 96_000 {
+        return Err(
+            "Transcript exceeds ~96KB; one-shot visual refinement is not supported yet. Split the session or shorten the text."
+                .to_string(),
+        );
+    }
+    let transcript_for_model = transcript_trim.to_string();
+
+    let max_tokens = if open_router_max_tokens == 0 {
+        8192
+    } else {
+        open_router_max_tokens
+    };
+
+    let (refined, used_model) = call_openrouter_refine_transcript(
+        open_router_api_key.trim(),
+        open_router_model.trim(),
+        &transcript_for_model,
+        &image_data_urls,
+        max_tokens,
+    )?;
+
+    let refined_trim = refined.trim();
+    let input_len = transcript_for_model.len();
+    if input_len > 150 && refined_trim.len() * 5 < input_len * 2 {
+        return Err(
+            "Refinement output looks too short compared to input — refusing to overwrite transcript.txt. \
+Try a larger max output token limit in Settings or a different vision model."
+                .to_string(),
+        );
+    }
+
+    let backup_path = capture_dir.join("transcript.pre-visual-refine.backup.txt");
+    fs::write(&backup_path, transcript_raw.as_bytes()).map_err(|e| {
+        format!("failed to write transcript backup before refine: {e}")
+    })?;
+
+    fs::write(&transcript_path, refined_trim.as_bytes())
+        .map_err(|e| format!("failed to write refined transcript.txt: {e}"))?;
+
+    Ok(format!(
+        "Transcript refined with visuals (model={used_model}). Previous text saved to transcript.pre-visual-refine.backup.txt"
+    ))
+}
+
+#[tauri::command]
 fn generate_session_analysis(
     id: String,
     open_router_api_key: String,
@@ -3177,6 +3497,7 @@ fn main() {
             set_capture_paused,
             get_capture_paused,
             transcribe_session_audio,
+            refine_transcript_with_visuals,
             generate_session_analysis,
             ask_session_question,
             get_session_data,

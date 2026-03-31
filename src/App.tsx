@@ -30,6 +30,7 @@ import {
 	startCaptureSession,
 	stopCaptureSession,
 	syncBotCapturePrefs,
+	refineTranscriptWithVisuals,
 	transcribeSessionAudio,
 } from "./lib/tauri";
 import { currentWindowLabel } from "./lib/windowLabel";
@@ -435,6 +436,33 @@ function MainApp(): JSX.Element {
 		}
 	};
 
+	const handleRefineTranscriptVisual = async (): Promise<void> => {
+		if (!openRouterApiKey.trim()) {
+			setCaptureMessage(
+				"OpenRouter API key is empty. Please set it in Settings.",
+			);
+			return;
+		}
+		setIsBusy(true);
+		try {
+			const result = await refineTranscriptWithVisuals(
+				currentSessionId,
+				openRouterApiKey,
+				openRouterModel,
+				openRouterMaxTokens,
+			);
+			setCaptureMessage(result);
+			const fetchedSession = await getSessionData(currentSessionId);
+			setActiveSession(fetchedSession);
+		} catch (error) {
+			setCaptureMessage(
+				`Failed to refine transcript: ${extractErrorMessage(error)}`,
+			);
+		} finally {
+			setIsBusy(false);
+		}
+	};
+
 	const handleGenerateAnalysis = async (): Promise<void> => {
 		if (!openRouterApiKey.trim()) {
 			setCaptureMessage(
@@ -610,6 +638,15 @@ function MainApp(): JSX.Element {
 														onClick={handleTranscribe}
 													>
 														{t("capture.transcribe")}
+													</Button>
+													<Button
+														variant="outline"
+														size="sm"
+														disabled={isBusy}
+														title={t("capture.refineTranscriptVisualHint")}
+														onClick={() => void handleRefineTranscriptVisual()}
+													>
+														{t("capture.refineTranscriptVisual")}
 													</Button>
 													<Button
 														variant="outline"

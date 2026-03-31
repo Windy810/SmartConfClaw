@@ -17,6 +17,9 @@ const en = {
 	"capture.sessionSynced": "Session synced: {id}",
 	"capture.syncFailedAfterStop": "Capture stopped, but failed to load session.",
 	"capture.transcribe": "Transcribe",
+	"capture.refineTranscriptVisual": "Fix transcript (visual)",
+	"capture.refineTranscriptVisualHint":
+		"Uses OpenRouter with sampled screenshots to correct ASR errors (terms, slide text). Needs transcript.txt + frames. Backup: transcript.pre-visual-refine.backup.txt",
 	"capture.generateAi": "Generate AI",
 	"capture.stop": "Stop",
 	"capture.startCapture": "Start Capture",
@@ -231,6 +234,9 @@ const zh: Record<string, string> = {
 	"capture.sessionSynced": "会话已同步：{id}",
 	"capture.syncFailedAfterStop": "已结束捕获，但加载会话失败。",
 	"capture.transcribe": "语音转写",
+	"capture.refineTranscriptVisual": "画面纠错转写",
+	"capture.refineTranscriptVisualHint":
+		"用 OpenRouter 结合本会话抽样截图，纠正语音转写中的术语/幻灯片文字等明显错误。需已有 transcript.txt 与截图；原稿备份为 transcript.pre-visual-refine.backup.txt",
 	"capture.generateAi": "AI 分析",
 	"capture.stop": "停止",
 	"capture.startCapture": "开始捕获",
