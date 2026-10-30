@@ -309,6 +309,11 @@ guard arguments.count >= 2 else {
     fail("usage: scc-helper <probe|list-windows|request-permission|system-audio>")
 }
 
+// A plain command-line process has no window-server connection; ScreenCaptureKit then aborts with
+// "Assertion failed: (did_initialize), function CGS_REQUIRE_INIT". Creating the shared
+// NSApplication sets that connection up. `.prohibited` keeps the helper out of the Dock.
+NSApplication.shared.setActivationPolicy(.prohibited)
+
 switch arguments[1] {
 case "probe":
     probe()
