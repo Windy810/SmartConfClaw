@@ -393,6 +393,23 @@ fn build_capture_dir(session_id: &str) -> Result<PathBuf, String> {
 
 fn capture_screenshot(path: &Path, source: &CaptureSource) -> Result<(), String> {
     let _ = fs::remove_file(path);
+    let written = |p: &Path| fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false);
+
+    // Window capture: ScreenCaptureKit via the helper first (reliable for covered windows on
+    // recent macOS), then `screencapture -l` as the fallback.
+    let mut helper_error: Option<String> = None;
+    if let CaptureSource::Window(target) = source {
+        let id = target
+            .lock()
+            .map_err(|_| "window target lock poisoned".to_string())?
+            .window_id;
+        match mac_helper::capture_window(id, path) {
+            Ok(true) if written(path) => return Ok(()),
+            Ok(_) => {}
+            Err(e) => helper_error = Some(e),
+        }
+    }
+
     let mut cmd = Command::new("screencapture");
     cmd.arg("-x");
     match source {
@@ -416,21 +433,33 @@ fn capture_screenshot(path: &Path, source: &CaptureSource) -> Result<(), String>
         }
     }
     cmd.arg(path);
-    let status = cmd
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+    let output = cmd
+        .stdin(Stdio::null())
+        .output()
         .map_err(|error| format!("failed to invoke screencapture: {error}"))?;
-    let written = fs::metadata(path).map(|m| m.len() > 0).unwrap_or(false);
-    if !status.success() || !written {
-        return Err(match source {
-            CaptureSource::Window(_) => {
-                "could not capture the selected window (closed or minimized?)".to_string()
-            }
-            _ => "screencapture failed (check Screen Recording permission)".to_string(),
-        });
+    if output.status.success() && written(path) {
+        return Ok(());
     }
-    Ok(())
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(match source {
+        CaptureSource::Window(_) => {
+            let mut msg = "could not capture the selected window".to_string();
+            let reasons: Vec<String> = helper_error
+                .into_iter()
+                .chain((!detail.is_empty()).then(|| format!("screencapture: {detail}")))
+                .collect();
+            if reasons.is_empty() {
+                msg.push_str(" (closed or minimized?)");
+            } else {
+                msg.push_str(&format!(" — {}", reasons.join("; ")));
+            }
+            msg
+        }
+        _ if detail.is_empty() => {
+            "screencapture failed (check Screen Recording permission)".to_string()
+        }
+        _ => format!("screencapture failed: {detail}"),
+    })
 }
 
 /// Sleeps for `interval_sec` but wakes every ~50ms to honor stop/pause so Stop never waits a full interval.

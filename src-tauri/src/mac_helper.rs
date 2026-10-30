@@ -193,3 +193,31 @@ pub fn spawn_system_audio(log_path: &Path) -> Result<(Child, ChildStdout), Strin
         .ok_or_else(|| "system audio helper has no stdout".to_string())?;
     Ok((child, stdout))
 }
+
+/// Screenshot of one window through ScreenCaptureKit (macOS 14+). Works while the window is
+/// covered by others. `Ok(false)` means "not supported here" so callers can fall back.
+pub fn capture_window(window_id: u32, out: &Path) -> Result<bool, String> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static UNSUPPORTED: AtomicBool = AtomicBool::new(false);
+    if UNSUPPORTED.load(Ordering::Relaxed) {
+        return Ok(false);
+    }
+    let path = helper_path()?;
+    let output = Command::new(&path)
+        .arg("screenshot")
+        .arg("--window-id")
+        .arg(window_id.to_string())
+        .arg("--out")
+        .arg(out)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("failed to run capture helper: {e}"))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(4) => {
+            UNSUPPORTED.store(true, Ordering::Relaxed);
+            Ok(false)
+        }
+        _ => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
+    }
+}

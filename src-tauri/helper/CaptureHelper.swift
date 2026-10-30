@@ -5,6 +5,9 @@
 //   probe               → JSON { systemAudio, screenRecording, osVersion }
 //   list-windows        → JSON array of normal app windows (id/app/title/bounds) for window capture
 //   request-permission  → triggers the Screen Recording permission prompt, JSON { granted }
+//   screenshot --window-id N --out PATH
+//                       → PNG of one window via ScreenCaptureKit (macOS 14+), even when covered;
+//                         exit code 4 when unsupported so the caller falls back to `screencapture -l`
 //   system-audio [--sample-rate N]
 //                       → streams system playback audio as raw f32le mono PCM on stdout
 //                         (ScreenCaptureKit, macOS 13+). No virtual audio driver (BlackHole) needed.
@@ -14,6 +17,7 @@ import CoreAudio
 import CoreGraphics
 import CoreMedia
 import Foundation
+import ImageIO
 import ScreenCaptureKit
 
 func emitJSON(_ object: Any) {
@@ -74,6 +78,11 @@ func listWindows() {
         if rect.width < 160 || rect.height < 120 {
             continue
         }
+        // Browsers keep fully transparent helper windows around; they cannot be captured.
+        let alpha = (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
+        if alpha < 0.05 {
+            continue
+        }
         let owner = info[kCGWindowOwnerName as String] as? String ?? ""
         let title = info[kCGWindowName as String] as? String ?? ""
         let onScreen = (info[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue ?? false
@@ -92,6 +101,38 @@ func listWindows() {
         ])
     }
     emitJSON(result)
+}
+
+@available(macOS 14.0, *)
+func captureWindowScreenshot(windowID: UInt32, outPath: String) async throws {
+    let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+    guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
+        throw NSError(domain: "SmartConfCapture", code: 2, userInfo: [
+            NSLocalizedDescriptionKey: "window \(windowID) not found (closed?)",
+        ])
+    }
+    let filter = SCContentFilter(desktopIndependentWindow: window)
+    let config = SCStreamConfiguration()
+    // Retina windows are captured at up to 2× points; plenty for slide text.
+    let scale = CGFloat(min(filter.pointPixelScale, 2))
+    config.width = max(Int(window.frame.width * scale), 2)
+    config.height = max(Int(window.frame.height * scale), 2)
+    config.showsCursor = false
+    config.ignoreShadowsSingleWindow = true
+    let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+
+    let url = URL(fileURLWithPath: outPath) as CFURL
+    guard let destination = CGImageDestinationCreateWithURL(url, "public.png" as CFString, 1, nil) else {
+        throw NSError(domain: "SmartConfCapture", code: 3, userInfo: [
+            NSLocalizedDescriptionKey: "cannot write \(outPath)",
+        ])
+    }
+    CGImageDestinationAddImage(destination, image, nil)
+    if !CGImageDestinationFinalize(destination) {
+        throw NSError(domain: "SmartConfCapture", code: 3, userInfo: [
+            NSLocalizedDescriptionKey: "failed to encode PNG",
+        ])
+    }
 }
 
 /// Captures everything the Mac plays (meeting app, browser tab, …) and writes it to stdout as a
@@ -273,6 +314,28 @@ case "probe":
     probe()
 case "list-windows":
     listWindows()
+case "screenshot":
+    guard #available(macOS 14.0, *) else {
+        fail("ScreenCaptureKit screenshots need macOS 14 or later.", code: 4)
+    }
+    func value(_ flag: String) -> String? {
+        guard let index = arguments.firstIndex(of: flag), index + 1 < arguments.count else {
+            return nil
+        }
+        return arguments[index + 1]
+    }
+    guard let idText = value("--window-id"), let windowID = UInt32(idText), let outPath = value("--out") else {
+        fail("usage: scc-helper screenshot --window-id N --out PATH")
+    }
+    Task {
+        do {
+            try await captureWindowScreenshot(windowID: windowID, outPath: outPath)
+            exit(0)
+        } catch {
+            fail("Window screenshot failed: \(error.localizedDescription)", code: 2)
+        }
+    }
+    dispatchMain()
 case "request-permission":
     emitJSON(["granted": CGRequestScreenCaptureAccess()])
 case "system-audio":
