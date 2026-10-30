@@ -2967,6 +2967,21 @@ fn cancel_region_selection(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Screen rectangle (points, global coordinates) of a window, for the region fallback.
+fn window_area_region(target: &Arc<Mutex<CaptureWindowTarget>>) -> Option<CaptureRegion> {
+    let id = target.lock().ok()?.window_id;
+    let window = mac_helper::list_windows()
+        .ok()?
+        .into_iter()
+        .find(|w| w.id == id)?;
+    (window.width >= 2.0 && window.height >= 2.0).then(|| CaptureRegion {
+        x: window.x,
+        y: window.y,
+        width: window.width,
+        height: window.height,
+    })
+}
+
 /// Removes loopback devices (BlackHole etc.) when system audio is captured by the helper, so the
 /// meeting audio is not recorded twice.
 fn without_loopback_specs(specs: &[String]) -> Vec<String> {
@@ -3015,7 +3030,7 @@ pub(crate) fn start_capture_session_inner(
     let resolved_channels = options.channels.unwrap_or(1);
     let resolved_frame_interval = options.frame_interval_sec.unwrap_or(2).clamp(1, 60);
 
-    let source = if let Some(w) = window {
+    let mut source = if let Some(w) = window {
         CaptureSource::Window(Arc::new(Mutex::new(w)))
     } else if let Some(d) = display_index.filter(|&d| d >= 1) {
         let n = list_capture_displays(app.clone())?.len();
@@ -3040,19 +3055,38 @@ pub(crate) fn start_capture_session_inner(
     let session_start_unix_ms = current_unix_timestamp_ms()?;
     let screenshot_path = capture_dir.join("screen-start.png");
 
+    let mut warnings: Vec<String> = Vec::new();
+    let window_label = match &source {
+        CaptureSource::Window(_) => source.label(),
+        _ => String::new(),
+    };
     if let Err(e) = capture_screenshot(&screenshot_path, &source) {
-        let _ = fs::remove_dir_all(&capture_dir);
-        return Err(e);
+        // Some macOS versions refuse single-window capture (ScreenCaptureKit -3811, and
+        // `screencapture -l` fails too). Fall back to recording the window's screen area.
+        let fallback = match &source {
+            CaptureSource::Window(target) => window_area_region(target),
+            _ => None,
+        };
+        let Some(region) = fallback else {
+            let _ = fs::remove_dir_all(&capture_dir);
+            return Err(e);
+        };
+        let region_source = CaptureSource::Region(region);
+        if let Err(e2) = capture_screenshot(&screenshot_path, &region_source) {
+            let _ = fs::remove_dir_all(&capture_dir);
+            return Err(format!("{e}; area fallback failed too: {e2}"));
+        }
+        warnings.push(format!(
+            "Window-only capture is not available on this Mac ({e}). Recording the window's screen area instead — keep it uncovered and don't move it."
+        ));
+        source = region_source;
     }
     let title = options
         .title
         .clone()
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| match &source {
-            CaptureSource::Window(_) => source.label(),
-            _ => String::new(),
-        });
+        .unwrap_or(window_label);
     write_capture_meta(
         &capture_dir,
         &CaptureMeta {
@@ -3071,7 +3105,6 @@ pub(crate) fn start_capture_session_inner(
     let detector = ChangeDetector::new(FrameSignature::from_path(&screenshot_path)?, ignore_top);
 
     // ---- audio ----
-    let mut warnings: Vec<String> = Vec::new();
     let mut system_audio_process: Option<Child> = None;
     let mut system_audio_stdout: Option<ChildStdout> = None;
     let ffmpeg_ok = ffmpeg_is_available();
