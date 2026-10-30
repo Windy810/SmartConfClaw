@@ -6,7 +6,7 @@ use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -18,34 +18,93 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use tauri::{AppHandle, Emitter, Manager};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use image::imageops::{self, FilterType};
 
+mod asr;
 mod bot_endpoint;
+mod export;
+mod frames;
+mod mac_helper;
+mod meeting_join;
 
-/// 8×8 average-hash bit differences tolerated as "same frame" (compression, cursor, clock, subpixel noise).
-const PERCEPTUAL_HASH_MAX_BIT_DIFF: u32 = 12;
+use asr::AsrConfig;
+use frames::{ChangeDetector, FrameSignature};
+
+/// When the captured window has been gone this long, an auto-stop capture ends the session.
+const WINDOW_LOST_AUTO_STOP_SEC: u64 = 20;
+/// Fraction of the picture ignored at the top in whole-display capture (menu bar clock).
+const DISPLAY_TOP_IGNORE_FRACTION: f32 = 0.04;
+
+/// What the frame sampler takes screenshots of.
+#[derive(Clone)]
+enum CaptureSource {
+    /// Whole main display (`screencapture` default).
+    Fullscreen,
+    Region(CaptureRegion),
+    /// 1-based index for `screencapture -D`.
+    Display(u32),
+    /// A single app window (`screencapture -l`): works while the window is covered by others,
+    /// so the user can keep working. Shared so the sampler can follow a recreated window.
+    Window(Arc<Mutex<CaptureWindowTarget>>),
+}
+
+impl CaptureSource {
+    fn kind(&self) -> &'static str {
+        match self {
+            CaptureSource::Fullscreen => "fullscreen",
+            CaptureSource::Region(_) => "region",
+            CaptureSource::Display(_) => "display",
+            CaptureSource::Window(_) => "window",
+        }
+    }
+
+    fn label(&self) -> String {
+        match self {
+            CaptureSource::Fullscreen => "Main display".to_string(),
+            CaptureSource::Region(r) => format!("Region {}×{}", r.width as i64, r.height as i64),
+            CaptureSource::Display(d) => format!("Display {d}"),
+            CaptureSource::Window(t) => t
+                .lock()
+                .map(|t| {
+                    if t.title.trim().is_empty() {
+                        t.app.clone()
+                    } else {
+                        format!("{} — {}", t.app, t.title)
+                    }
+                })
+                .unwrap_or_default(),
+        }
+    }
+}
 
 struct ActiveCapture {
     id: String,
     dir: PathBuf,
-    first_screenshot_path: PathBuf,
     audio_process: Option<Child>,
+    /// Swift helper streaming system audio into ffmpeg's stdin.
+    system_audio_process: Option<Child>,
     frame_sampler_stop: Arc<AtomicBool>,
-    frame_sampler_handle: Option<JoinHandle<()>>,
-    /// When true, frame sampler sleeps and (on Unix) audio ffmpeg is SIGSTOP’d.
+    frame_sampler_handle: Option<JoinHandle<Option<ChangeDetector>>>,
+    /// When true, frame sampler sleeps and (on Unix) audio processes are SIGSTOP’d.
     pause_signal: Arc<AtomicBool>,
-    region: Option<CaptureRegion>,
-    /// 1-based index for `screencapture -D` (whole display). When set, region rects are ignored for capture.
-    display_index: Option<u32>,
+    source: CaptureSource,
     /// Wall-clock ms at session start (for T+ offsets on the timeline).
     session_start_unix_ms: u64,
+    pause_started_ms: Option<u64>,
+    paused_total_ms: u64,
+    /// Set once ffmpeg has exited, so the live transcriber can drain the last segment.
+    audio_done: Arc<AtomicBool>,
+    system_audio: bool,
+    live_transcript: bool,
+    /// Window capture: the target window currently cannot be captured.
+    target_lost: Arc<AtomicBool>,
+    warnings: Vec<String>,
+    title: String,
 }
 
 #[derive(Clone)]
 struct CompletedCapture {
     id: String,
     dir: PathBuf,
-    first_screenshot_path: PathBuf,
 }
 
 #[derive(Serialize)]
@@ -66,13 +125,31 @@ struct AudioInputDevice {
     is_loopback: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CaptureStartOptions {
+    #[serde(default)]
     audio_input_specs: Vec<String>,
     sample_rate: Option<u32>,
     channels: Option<u8>,
     frame_interval_sec: Option<u64>,
+    /// Record what the Mac plays via the built-in helper (no BlackHole needed).
+    #[serde(default)]
+    system_audio: bool,
+    /// With system audio: also mix in `audio_input_specs` microphones. Without system audio the
+    /// device inputs are always used (legacy behaviour).
+    #[serde(default)]
+    include_microphone: Option<bool>,
+    /// Transcribe while recording (segments of `live_segment_sec`).
+    #[serde(default)]
+    live_asr: Option<AsrConfig>,
+    #[serde(default)]
+    live_segment_sec: Option<u64>,
+    #[serde(default)]
+    title: Option<String>,
+    /// Window capture: end the session when the meeting window has been gone for a while.
+    #[serde(default)]
+    auto_stop_on_window_close: Option<bool>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -82,6 +159,16 @@ pub(crate) struct CaptureRegion {
     y: f64,
     width: f64,
     height: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CaptureWindowTarget {
+    window_id: u32,
+    #[serde(default)]
+    app: String,
+    #[serde(default)]
+    title: String,
 }
 
 #[derive(Serialize)]
@@ -94,6 +181,15 @@ struct CaptureDisplayInfo {
     height: u32,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CaptureWindowInfo {
+    #[serde(flatten)]
+    window: mac_helper::WindowInfo,
+    /// Looks like an online-meeting window (Zoom, Teams, Meet tab, …).
+    is_meeting: bool,
+    score: i32,
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,6 +198,16 @@ struct CaptureMeta {
     /// Present for captures that record real `frame_offsets.jsonl` timestamps.
     #[serde(default)]
     session_start_unix_ms: Option<u64>,
+    #[serde(default)]
+    title: Option<String>,
+    /// fullscreen | region | display | window
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    source_label: Option<String>,
+    /// Wall seconds from start to stop (written at stop).
+    #[serde(default)]
+    duration_sec: Option<f64>,
 }
 
 static ACTIVE_CAPTURE: OnceLock<Mutex<Option<ActiveCapture>>> = OnceLock::new();
@@ -122,14 +228,17 @@ fn position_floating_window(app: &AppHandle, win: &tauri::WebviewWindow) {
     let size = monitor.size();
     let scale = monitor.scale_factor();
     let screen_w = size.width as f64 / scale;
-    let float_w = 280.0;
+    let float_w = FLOAT_WINDOW_W;
     let margin_x = 14.0;
     let margin_y = 36.0;
     let x = (screen_w - float_w - margin_x).max(8.0);
     let _ = win.set_position(tauri::LogicalPosition::new(x, margin_y));
 }
 
-fn signal_audio_process(child: &mut Child, pause: bool) {
+const FLOAT_WINDOW_W: f64 = 380.0;
+const FLOAT_WINDOW_H: f64 = 86.0;
+
+fn signal_process(child: &mut Child, sig: i32) {
     #[cfg(unix)]
     {
         let pid = child.id();
@@ -137,18 +246,51 @@ fn signal_audio_process(child: &mut Child, pause: bool) {
             return;
         }
         unsafe {
-            let sig = if pause {
-                libc::SIGSTOP
-            } else {
-                libc::SIGCONT
-            };
             let _ = libc::kill(pid as i32, sig);
         }
     }
     #[cfg(not(unix))]
     {
-        let _ = (child, pause);
+        let _ = (child, sig);
     }
+}
+
+#[cfg(unix)]
+const SIG_PAUSE: i32 = libc::SIGSTOP;
+#[cfg(unix)]
+const SIG_RESUME: i32 = libc::SIGCONT;
+#[cfg(unix)]
+const SIG_INTERRUPT: i32 = libc::SIGINT;
+#[cfg(not(unix))]
+const SIG_PAUSE: i32 = 0;
+#[cfg(not(unix))]
+const SIG_RESUME: i32 = 0;
+#[cfg(not(unix))]
+const SIG_INTERRUPT: i32 = 0;
+
+fn signal_audio_processes(cap: &mut ActiveCapture, paused: bool) {
+    let sig = if paused { SIG_PAUSE } else { SIG_RESUME };
+    if let Some(child) = cap.audio_process.as_mut() {
+        signal_process(child, sig);
+    }
+    if let Some(child) = cap.system_audio_process.as_mut() {
+        signal_process(child, sig);
+    }
+}
+
+/// Lets ffmpeg finalize the WAV header (SIGINT) instead of killing it mid-write.
+fn stop_ffmpeg_gracefully(child: &mut Child) {
+    signal_process(child, SIG_RESUME);
+    signal_process(child, SIG_INTERRUPT);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if let Ok(Some(_)) = child.try_wait() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[tauri::command]
@@ -159,10 +301,23 @@ fn set_capture_paused(paused: bool) -> Result<(), String> {
     let cap = store
         .as_mut()
         .ok_or_else(|| "no active capture".to_string())?;
-    cap.pause_signal.store(paused, Ordering::Relaxed);
-    if let Some(ref mut child) = cap.audio_process {
-        signal_audio_process(child, paused);
+    let was_paused = cap.pause_signal.load(Ordering::Relaxed);
+    if was_paused == paused {
+        return Ok(());
     }
+    let now_ms = current_unix_timestamp_ms()?;
+    if paused {
+        cap.pause_started_ms = Some(now_ms);
+    } else if let Some(started) = cap.pause_started_ms.take() {
+        cap.paused_total_ms += now_ms.saturating_sub(started);
+        asr::append_pause(
+            &cap.dir,
+            started.saturating_sub(cap.session_start_unix_ms) as f64 / 1000.0,
+            now_ms.saturating_sub(cap.session_start_unix_ms) as f64 / 1000.0,
+        );
+    }
+    cap.pause_signal.store(paused, Ordering::Relaxed);
+    signal_audio_processes(cap, paused);
     Ok(())
 }
 
@@ -175,6 +330,38 @@ fn get_capture_paused() -> Result<bool, String> {
         .as_ref()
         .ok_or_else(|| "no active capture".to_string())?;
     Ok(cap.pause_signal.load(Ordering::Relaxed))
+}
+
+#[tauri::command]
+fn get_capture_status() -> Value {
+    let Ok(store) = active_capture_store().lock() else {
+        return json!({ "running": false });
+    };
+    let Some(cap) = store.as_ref() else {
+        return json!({ "running": false });
+    };
+    let now_ms = current_unix_timestamp_ms().unwrap_or(cap.session_start_unix_ms);
+    let current_pause = cap
+        .pause_started_ms
+        .map(|p| now_ms.saturating_sub(p))
+        .unwrap_or(0);
+    let elapsed_ms = now_ms
+        .saturating_sub(cap.session_start_unix_ms)
+        .saturating_sub(cap.paused_total_ms + current_pause);
+    json!({
+        "running": true,
+        "sessionId": cap.id,
+        "title": cap.title,
+        "paused": cap.pause_signal.load(Ordering::Relaxed),
+        "elapsedSec": elapsed_ms / 1000,
+        "source": cap.source.kind(),
+        "sourceLabel": cap.source.label(),
+        "systemAudio": cap.system_audio,
+        "liveTranscript": cap.live_transcript,
+        "recordingAudio": cap.audio_process.is_some(),
+        "targetLost": cap.target_lost.load(Ordering::Relaxed),
+        "warnings": cap.warnings,
+    })
 }
 
 fn current_unix_timestamp() -> Result<u64, String> {
@@ -204,48 +391,46 @@ fn build_capture_dir(session_id: &str) -> Result<PathBuf, String> {
     Ok(capture_dir)
 }
 
-fn capture_screenshot(
-    path: &PathBuf,
-    region: Option<&CaptureRegion>,
-    display_index: Option<u32>,
-) -> Result<(), String> {
+fn capture_screenshot(path: &Path, source: &CaptureSource) -> Result<(), String> {
+    let _ = fs::remove_file(path);
     let mut cmd = Command::new("screencapture");
     cmd.arg("-x");
-    if let Some(d) = display_index {
-        cmd.arg("-D").arg(d.to_string());
-    } else if let Some(r) = region {
-        cmd.arg("-R")
-            .arg(format!("{},{},{},{}", r.x as i32, r.y as i32, r.width as i32, r.height as i32));
+    match source {
+        CaptureSource::Fullscreen => {}
+        CaptureSource::Display(d) => {
+            cmd.arg("-D").arg(d.to_string());
+        }
+        CaptureSource::Region(r) => {
+            cmd.arg("-R").arg(format!(
+                "{},{},{},{}",
+                r.x as i32, r.y as i32, r.width as i32, r.height as i32
+            ));
+        }
+        CaptureSource::Window(target) => {
+            let id = target
+                .lock()
+                .map_err(|_| "window target lock poisoned".to_string())?
+                .window_id;
+            // -o: no window shadow; -l: this window only, even if other windows cover it.
+            cmd.arg("-o").arg("-l").arg(id.to_string());
+        }
     }
     cmd.arg(path);
     let status = cmd
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .map_err(|error| format!("failed to invoke screencapture: {error}"))?;
-    if !status.success() {
-        return Err("screencapture returned non-zero status".to_string());
+    let written = fs::metadata(path).map(|m| m.len() > 0).unwrap_or(false);
+    if !status.success() || !written {
+        return Err(match source {
+            CaptureSource::Window(_) => {
+                "could not capture the selected window (closed or minimized?)".to_string()
+            }
+            _ => "screencapture failed (check Screen Recording permission)".to_string(),
+        });
     }
     Ok(())
-}
-
-/// Perceptual fingerprint of a screenshot: 8×8 grayscale average hash (not raw PNG bytes).
-fn screenshot_perceptual_hash(path: &PathBuf) -> Result<u64, String> {
-    let img = image::open(path).map_err(|e| format!("open image for hash: {e}"))?;
-    let gray = img.to_luma8();
-    let small = imageops::resize(&gray, 8, 8, FilterType::Triangle);
-    let sum: u32 = small.pixels().map(|p| p[0] as u32).sum();
-    let mean = (sum / 64) as u8;
-    let mut hash: u64 = 0;
-    for (i, p) in small.pixels().enumerate() {
-        if p[0] > mean {
-            hash |= 1u64 << i;
-        }
-    }
-    Ok(hash)
-}
-
-#[inline]
-fn perceptual_hash_unchanged(prev: u64, current: u64) -> bool {
-    (prev ^ current).count_ones() <= PERCEPTUAL_HASH_MAX_BIT_DIFF
 }
 
 /// Sleeps for `interval_sec` but wakes every ~50ms to honor stop/pause so Stop never waits a full interval.
@@ -273,63 +458,96 @@ fn sleep_capture_interval_or_stop(
     }
 }
 
-fn spawn_frame_sampler(
+struct FrameSamplerArgs {
+    app: AppHandle,
+    session_id: String,
     dir: PathBuf,
     stop_signal: Arc<AtomicBool>,
     pause_signal: Arc<AtomicBool>,
-    initial_hash: u64,
-    region: Option<CaptureRegion>,
-    display_index: Option<u32>,
+    target_lost: Arc<AtomicBool>,
+    detector: ChangeDetector,
+    source: CaptureSource,
     frame_interval_sec: u64,
     session_start_unix_ms: u64,
-) -> JoinHandle<()> {
+    auto_stop_on_window_close: bool,
+}
+
+/// Samples the capture source every interval and stores a frame only when the slide changed
+/// (see [`frames::ChangeDetector`]). Returns the detector so the final screenshot can be deduped.
+fn spawn_frame_sampler(args: FrameSamplerArgs) -> JoinHandle<Option<ChangeDetector>> {
     thread::spawn(move || {
+        let FrameSamplerArgs {
+            app,
+            session_id,
+            dir,
+            stop_signal,
+            pause_signal,
+            target_lost,
+            mut detector,
+            source,
+            frame_interval_sec,
+            session_start_unix_ms,
+            auto_stop_on_window_close,
+        } = args;
         let mut frame_index: u32 = 1;
-        let mut last_hash: u64 = initial_hash;
+        let mut lost_since: Option<std::time::Instant> = None;
+        let mut failures: u32 = 0;
+        let temp_path = dir.join("frame-tmp.png");
 
         loop {
+            sleep_capture_interval_or_stop(&stop_signal, &pause_signal, frame_interval_sec.max(1));
             if stop_signal.load(Ordering::Relaxed) {
                 break;
             }
-            while pause_signal.load(Ordering::Relaxed) {
-                thread::sleep(Duration::from_millis(120));
-                if stop_signal.load(Ordering::Relaxed) {
-                    break;
+
+            if capture_screenshot(&temp_path, &source).is_err() {
+                failures += 1;
+                if let CaptureSource::Window(target) = &source {
+                    // The client may have recreated its window (e.g. share view / full screen).
+                    if failures % 2 == 0 {
+                        let current = target.lock().map(|t| t.clone()).ok();
+                        if let Some(found) = current.as_ref().and_then(meeting_join::reresolve_window) {
+                            if let Ok(mut t) = target.lock() {
+                                t.window_id = found.id;
+                                t.title = found.title.clone();
+                            }
+                            failures = 0;
+                            continue;
+                        }
+                    }
+                    let since = *lost_since.get_or_insert_with(std::time::Instant::now);
+                    if !target_lost.swap(true, Ordering::Relaxed) {
+                        let _ = app.emit("capture-target-lost", json!({ "sessionId": session_id }));
+                    }
+                    if auto_stop_on_window_close
+                        && since.elapsed() >= Duration::from_secs(WINDOW_LOST_AUTO_STOP_SEC)
+                    {
+                        let app = app.clone();
+                        let sid = session_id.clone();
+                        thread::spawn(move || {
+                            if stop_capture_session_blocking(&app).is_ok() {
+                                let _ = app.emit("capture-auto-stopped", json!({ "sessionId": sid }));
+                            }
+                        });
+                        break;
+                    }
                 }
-            }
-            if stop_signal.load(Ordering::Relaxed) {
-                break;
-            }
-
-            sleep_capture_interval_or_stop(
-                &stop_signal,
-                &pause_signal,
-                frame_interval_sec.max(1),
-            );
-            if stop_signal.load(Ordering::Relaxed) {
-                break;
-            }
-
-            let temp_path = dir.join("frame-tmp.png");
-            if capture_screenshot(&temp_path, region.as_ref(), display_index).is_err() {
-                let _ = fs::remove_file(&temp_path);
                 continue;
             }
-
+            failures = 0;
+            if lost_since.take().is_some() {
+                target_lost.store(false, Ordering::Relaxed);
+            }
             if stop_signal.load(Ordering::Relaxed) {
                 let _ = fs::remove_file(&temp_path);
                 break;
             }
 
-            let current_hash = match screenshot_perceptual_hash(&temp_path) {
-                Ok(value) => value,
-                Err(_) => {
-                    let _ = fs::remove_file(&temp_path);
-                    continue;
-                }
+            let Ok(signature) = FrameSignature::from_path(&temp_path) else {
+                let _ = fs::remove_file(&temp_path);
+                continue;
             };
-
-            if perceptual_hash_unchanged(last_hash, current_hash) {
+            if !detector.observe(signature) {
                 let _ = fs::remove_file(&temp_path);
                 continue;
             }
@@ -339,28 +557,24 @@ fn spawn_frame_sampler(
                 let _ = fs::copy(&temp_path, &target);
                 let _ = fs::remove_file(&temp_path);
             }
-
-            if let Ok(now_ms) = SystemTime::now().duration_since(UNIX_EPOCH) {
-                let offset_sec =
-                    (now_ms.as_millis() as u64).saturating_sub(session_start_unix_ms) as f64
-                        / 1000.0;
+            if let Ok(now_ms) = current_unix_timestamp_ms() {
+                let offset_sec = now_ms.saturating_sub(session_start_unix_ms) as f64 / 1000.0;
                 if let Some(name) = target.file_name().and_then(|n| n.to_str()) {
                     append_frame_offset_jsonl(&dir, name, offset_sec);
+                    let _ = app.emit(
+                        "capture-frame",
+                        json!({ "sessionId": session_id, "frame": name, "offsetSec": offset_sec }),
+                    );
                 }
             }
-
-            last_hash = current_hash;
             frame_index += 1;
         }
+        Some(detector)
     })
 }
 
-fn write_capture_meta(capture_dir: &PathBuf, frame_interval_sec: u64, session_start_unix_ms: u64) {
-    let meta = CaptureMeta {
-        frame_interval_sec: frame_interval_sec.max(1),
-        session_start_unix_ms: Some(session_start_unix_ms),
-    };
-    if let Ok(raw) = serde_json::to_string_pretty(&meta) {
+fn write_capture_meta(capture_dir: &Path, meta: &CaptureMeta) {
+    if let Ok(raw) = serde_json::to_string_pretty(meta) {
         let _ = fs::write(capture_dir.join("capture_meta.json"), raw);
     }
 }
@@ -375,6 +589,10 @@ fn read_capture_meta(capture_dir: &PathBuf) -> CaptureMeta {
     CaptureMeta {
         frame_interval_sec: 2,
         session_start_unix_ms: None,
+        title: None,
+        source: None,
+        source_label: None,
+        duration_sec: None,
     }
 }
 
@@ -557,56 +775,104 @@ fn list_avfoundation_audio_devices() -> Result<Vec<AudioInputDevice>, String> {
     Ok(devices)
 }
 
-fn spawn_audio_capture(
-    audio_path: &PathBuf,
-    log_path: &PathBuf,
-    audio_input_specs: &[String],
+struct AudioCaptureArgs<'a> {
+    audio_path: &'a Path,
+    log_path: &'a Path,
+    /// AVFoundation device specs (`none:<index>`), mixed together.
+    device_specs: &'a [String],
+    /// Raw f32le mono stream from the system-audio helper, fed to ffmpeg's stdin.
+    system_audio: Option<ChildStdout>,
     sample_rate: u32,
     channels: u8,
-) -> Result<Option<Child>, String> {
+    /// Also write `live/seg-NNNNN.wav` chunks of this length for live transcription.
+    live_segment_sec: Option<u64>,
+    live_dir: &'a Path,
+}
+
+fn spawn_audio_capture(args: AudioCaptureArgs) -> Result<Option<Child>, String> {
     if !ffmpeg_is_available() {
         return Ok(None);
     }
+    let specs: Vec<String> = args
+        .device_specs
+        .iter()
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect();
+    let input_count = specs.len() + usize::from(args.system_audio.is_some());
+    if input_count == 0 {
+        return Ok(None);
+    }
 
-    let stderr_log = File::create(log_path).map_err(|error| format!("failed to create ffmpeg log file: {error}"))?;
+    let stderr_log = File::create(args.log_path)
+        .map_err(|error| format!("failed to create ffmpeg log file: {error}"))?;
 
     let mut command = Command::new("ffmpeg");
-    command.arg("-y");
-
-    let specs: Vec<String> = if audio_input_specs.is_empty() {
-        vec!["none:0".to_string()]
-    } else {
-        audio_input_specs
-            .iter()
-            .map(|item| item.trim().to_string())
-            .filter(|item| !item.is_empty())
-            .collect()
-    };
-
-    let normalized_specs = if specs.is_empty() { vec!["none:0".to_string()] } else { specs };
-
-    for spec in &normalized_specs {
+    command.arg("-y").arg("-nostdin");
+    for spec in &specs {
         command.arg("-f").arg("avfoundation").arg("-i").arg(spec);
     }
-
-    if normalized_specs.len() > 1 {
-        let mut input_refs = String::new();
-        for index in 0..normalized_specs.len() {
-            input_refs.push_str(&format!("[{index}:a]"));
-        }
-        let filter = format!("{input_refs}amix=inputs={}:duration=longest:dropout_transition=2[aout]", normalized_specs.len());
-        command.arg("-filter_complex").arg(filter);
-        command.arg("-map").arg("[aout]");
-    } else {
-        command.arg("-map").arg("0:a");
+    if args.system_audio.is_some() {
+        command
+            .arg("-f")
+            .arg("f32le")
+            .arg("-ar")
+            .arg(mac_helper::SYSTEM_AUDIO_SAMPLE_RATE.to_string())
+            .arg("-ac")
+            .arg("1")
+            .arg("-i")
+            .arg("pipe:0");
     }
 
-    let child = command
+    let mut input_refs = String::new();
+    for index in 0..input_count {
+        input_refs.push_str(&format!("[{index}:a]"));
+    }
+    let mixed = if input_count > 1 {
+        format!("{input_refs}amix=inputs={input_count}:duration=longest:dropout_transition=2")
+    } else {
+        format!("{input_refs}anull")
+    };
+    let filter = if args.live_segment_sec.is_some() {
+        format!("{mixed},asplit=2[aout][alive]")
+    } else {
+        format!("{mixed}[aout]")
+    };
+    command.arg("-filter_complex").arg(filter);
+    command
+        .arg("-map")
+        .arg("[aout]")
         .arg("-ac")
-        .arg(channels.to_string())
+        .arg(args.channels.to_string())
         .arg("-ar")
-        .arg(sample_rate.to_string())
-        .arg(audio_path)
+        .arg(args.sample_rate.to_string())
+        .arg(args.audio_path);
+
+    if let Some(seg) = args.live_segment_sec {
+        fs::create_dir_all(args.live_dir)
+            .map_err(|e| format!("failed to create live segment dir: {e}"))?;
+        command
+            .arg("-map")
+            .arg("[alive]")
+            .arg("-ac")
+            .arg("1")
+            .arg("-ar")
+            .arg("16000")
+            .arg("-f")
+            .arg("segment")
+            .arg("-segment_time")
+            .arg(seg.to_string())
+            .arg("-reset_timestamps")
+            .arg("1")
+            .arg(args.live_dir.join("seg-%05d.wav"));
+    }
+
+    let stdin = match args.system_audio {
+        Some(stdout) => Stdio::from(stdout),
+        None => Stdio::null(),
+    };
+    let child = command
+        .stdin(stdin)
         .stdout(Stdio::null())
         .stderr(Stdio::from(stderr_log))
         .spawn()
@@ -665,56 +931,74 @@ fn split_transcript_into_chunks(transcript: &str, chunk_count: usize) -> Vec<Str
     chunks
 }
 
-fn build_timeline_from_dir(capture_dir: &PathBuf) -> Vec<Value> {
-    let transcript_path = capture_dir.join("transcript.txt");
-    let transcript = fs::read_to_string(&transcript_path)
-        .unwrap_or_else(|_| "Audio transcription is pending integration. Capture files are generated locally.".to_string());
-
-    let mut items: Vec<(String, PathBuf)> = Vec::new();
-
+/// screen-start.png, frame-*.png (sorted), screen-stop.png — the session's timeline images.
+fn collect_frame_paths(capture_dir: &PathBuf) -> Vec<PathBuf> {
+    let mut items: Vec<PathBuf> = Vec::new();
     let start_path = capture_dir.join("screen-start.png");
     if start_path.exists() {
-        items.push(("000000".to_string(), start_path));
+        items.push(start_path);
     }
-
     if let Ok(entries) = fs::read_dir(capture_dir) {
         let mut frame_paths: Vec<PathBuf> = entries
             .filter_map(|entry| entry.ok().map(|value| value.path()))
             .filter(|path| {
                 path.file_name()
                     .and_then(|name| name.to_str())
-                    .map(|name| name.starts_with("frame-") && name.ends_with(".png"))
+                    .map(|name| name.starts_with("frame-") && name.ends_with(".png") && name != "frame-tmp.png")
                     .unwrap_or(false)
             })
             .collect();
         frame_paths.sort();
-
-        for frame_path in frame_paths {
-            let key = frame_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("999999")
-                .to_string();
-            items.push((key, frame_path));
-        }
+        items.extend(frame_paths);
     }
-
     let stop_path = capture_dir.join("screen-stop.png");
     if stop_path.exists() {
-        items.push(("999999".to_string(), stop_path));
+        items.push(stop_path);
     }
+    items
+}
 
-    items.sort_by(|a, b| a.0.cmp(&b.0));
+fn build_timeline_from_dir(capture_dir: &PathBuf) -> Vec<Value> {
+    let items = collect_frame_paths(capture_dir);
     let meta = read_capture_meta(capture_dir);
     let frame_interval_sec = meta.frame_interval_sec.max(1);
     let offsets = read_frame_offsets_map(capture_dir);
     let use_real_offsets = !offsets.is_empty();
-    let transcript_chunks = split_transcript_into_chunks(&transcript, items.len());
+    let times: Vec<f64> = items
+        .iter()
+        .enumerate()
+        .map(|(index, path)| resolve_timeline_offset_sec(path, index, &offsets, frame_interval_sec))
+        .collect();
+
+    // Prefer timestamped segments: each frame gets what was said while it was on screen.
+    let segments = asr::read_segments(capture_dir);
+    let transcript_chunks: Vec<String> = if !segments.is_empty() {
+        (0..items.len())
+            .map(|i| {
+                let start = times[i];
+                let end = times.get(i + 1).copied().unwrap_or(f64::INFINITY);
+                segments
+                    .iter()
+                    .filter(|seg| {
+                        let mid = (seg.start_sec + seg.end_sec) / 2.0;
+                        (i == 0 && mid < start) || (mid >= start && mid < end)
+                    })
+                    .map(|seg| seg.text.trim().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect()
+    } else {
+        let transcript = fs::read_to_string(capture_dir.join("transcript.txt")).unwrap_or_else(|_| {
+            "Audio transcription is pending. Click Transcribe (or enable live transcription).".to_string()
+        });
+        split_transcript_into_chunks(&transcript, items.len())
+    };
 
     items
         .iter()
         .enumerate()
-        .map(|(index, (_, path))| {
+        .map(|(index, path)| {
             let chunk = transcript_chunks
                 .get(index)
                 .map(|v| v.trim().to_string())
@@ -728,21 +1012,25 @@ fn build_timeline_from_dir(capture_dir: &PathBuf) -> Vec<Value> {
                 }
                 s
             };
-            let timestamp = resolve_timeline_offset_sec(path, index, &offsets, frame_interval_sec);
             let time_note = if use_real_offsets {
-                "T+ uses elapsed time from session start when each screenshot was saved (see frame_offsets.jsonl)."
+                "T+ is the elapsed time from session start when the screenshot was saved."
             } else {
-                "Legacy session: timestamps assume a fixed interval between items (no per-frame offsets on disk)."
+                "Legacy session: timestamps assume a fixed interval between items."
+            };
+            let mapping_note = if segments.is_empty() {
+                "Transcript text is split evenly across frames (no timestamps yet)."
+            } else {
+                "Transcript lines are matched to the slide that was on screen when they were spoken."
             };
             json!({
               "id": format!("tl-rs-live-{index:03}"),
-              "timestamp": timestamp,
+              "timestamp": times[index],
               "pptScreenshotPath": to_displayable_image_src(path),
               "originalTranscript": chunk,
               "summary": summary,
               "annotations": [
-                { "term": "Frame Deduplication", "definition": "Screenshots are compared with a small 8×8 perceptual hash; if the picture is effectively unchanged, the frame is not saved." },
-                { "term": "Timeline time (T+)", "definition": format!("{} Poll interval is {} s; only changed screens are stored.", time_note, frame_interval_sec) }
+                { "term": "Slide change detection", "definition": "Frames are stored when the picture changed and settled; video tiles and duplicates are ignored." },
+                { "term": "Timeline time (T+)", "definition": format!("{} {} Poll interval is {} s.", time_note, mapping_note, frame_interval_sec) }
               ]
             })
         })
@@ -798,108 +1086,6 @@ fn tail_lines(content: &str, max_lines: usize) -> String {
     let lines: Vec<&str> = content.lines().collect();
     let start = lines.len().saturating_sub(max_lines);
     lines[start..].join("\n")
-}
-
-fn call_whisper_cpp(whisper_endpoint: &str, audio_path: &PathBuf, language: &str) -> Result<String, String> {
-    let mut command = Command::new("curl");
-    command
-        .arg("-sS")
-        .arg("-X")
-        .arg("POST")
-        .arg(whisper_endpoint)
-        .arg("-F")
-        .arg(format!("file=@{}", audio_path.to_string_lossy()))
-        .arg("-F")
-        .arg("temperature=0.0")
-        .arg("-F")
-        .arg("response-format=json");
-    if !language.trim().is_empty() {
-        command.arg("-F").arg(format!("language={}", language.trim()));
-    }
-
-    let output = command
-        .output()
-        .map_err(|error| format!("failed to call whisper.cpp endpoint: {error}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("whisper.cpp request failed: {stderr}"));
-    }
-
-    let body = String::from_utf8_lossy(&output.stdout).to_string();
-    if body.trim().is_empty() {
-        return Err("whisper.cpp response is empty".to_string());
-    }
-
-    let parsed: Result<Value, _> = serde_json::from_str(&body);
-    match parsed {
-        Ok(value) => {
-            if let Some(text) = value.get("text").and_then(Value::as_str) {
-                Ok(text.to_string())
-            } else {
-                Ok(body)
-            }
-        }
-        Err(_) => Ok(body),
-    }
-}
-
-fn call_openai_compatible_asr(
-    endpoint: &str,
-    api_key: &str,
-    model: &str,
-    audio_path: &PathBuf,
-    language: &str,
-) -> Result<String, String> {
-    let mut command = Command::new("curl");
-    command
-        .arg("-sS")
-        .arg("-X")
-        .arg("POST")
-        .arg(endpoint)
-        .arg("-H")
-        .arg(format!("Authorization: Bearer {}", api_key))
-        .arg("-F")
-        .arg(format!("file=@{}", audio_path.to_string_lossy()))
-        .arg("-F")
-        .arg(format!("model={model}"));
-
-    if !language.trim().is_empty() {
-        command.arg("-F").arg(format!("language={}", language.trim()));
-    }
-
-    let output = command
-        .output()
-        .map_err(|error| format!("failed to call OpenAI-compatible ASR endpoint: {error}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("OpenAI-compatible ASR request failed: {stderr}"));
-    }
-
-    let body = String::from_utf8_lossy(&output.stdout).to_string();
-    if body.trim().is_empty() {
-        return Err("OpenAI-compatible ASR response is empty".to_string());
-    }
-
-    let parsed: Result<Value, _> = serde_json::from_str(&body);
-    match parsed {
-        Ok(value) => {
-            if let Some(error_message) = value
-                .get("error")
-                .and_then(|error| error.get("message"))
-                .and_then(Value::as_str)
-            {
-                return Err(format!("ASR API error: {error_message}"));
-            }
-            if let Some(text) = value.get("text").and_then(Value::as_str) {
-                Ok(text.to_string())
-            } else {
-                Ok(body)
-            }
-        }
-        Err(_) => Ok(body),
-    }
 }
 
 fn extract_json_block(content: &str) -> String {
@@ -960,29 +1146,7 @@ fn sanitize_llm_json_payload(s: &str) -> String {
 }
 
 fn collect_analysis_images(capture_dir: &PathBuf, max_images: usize) -> Vec<String> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    let start = capture_dir.join("screen-start.png");
-    if start.exists() {
-        candidates.push(start);
-    }
-    if let Ok(entries) = fs::read_dir(capture_dir) {
-        let mut frame_paths: Vec<PathBuf> = entries
-            .filter_map(|entry| entry.ok().map(|value| value.path()))
-            .filter(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .map(|name| name.starts_with("frame-") && name.ends_with(".png"))
-                    .unwrap_or(false)
-            })
-            .collect();
-        frame_paths.sort();
-        candidates.extend(frame_paths);
-    }
-    let stop = capture_dir.join("screen-stop.png");
-    if stop.exists() {
-        candidates.push(stop);
-    }
-
+    let candidates = collect_frame_paths(capture_dir);
     if candidates.is_empty() || max_images == 0 {
         return vec![];
     }
@@ -1007,6 +1171,8 @@ struct AnalysisOutput {
     references: Vec<Value>,
     /// Domain mind map: theme keywords + thematic branches extending the research field.
     mind_map: Value,
+    /// Meeting minutes: key points, decisions, action items, open questions.
+    minutes: Value,
 }
 
 fn clamp_openrouter_max_tokens(requested: u32) -> u32 {
@@ -1039,6 +1205,12 @@ fn call_openrouter_analysis_request(
 and output STRICT JSON with this exact shape:\n\
 {{\n\
   \"summary\": \"<concise summary, max 200 words>\",\n\
+  \"minutes\": {{\n\
+    \"keyPoints\": [\"<main point made in the session, one sentence>\", ...],\n\
+    \"decisions\": [\"<conclusion / decision / claim the speakers settled on>\", ...],\n\
+    \"actionItems\": [{{\"task\": \"<follow-up task>\", \"owner\": \"<person or empty>\", \"due\": \"<date or empty>\"}}],\n\
+    \"openQuestions\": [\"<question raised but not resolved>\", ...]\n\
+  }},\n\
   \"tags\": [\"<topic tag>\", ...],\n\
   \"concepts\": [\n\
     {{\"term\": \"<technical term>\", \"definition\": \"<1-2 sentence explanation>\"}}\n\
@@ -1094,6 +1266,9 @@ Interactive knowledge graph (for React Flow UI — prioritize CLARITY):\n\
 - ids: lowercase_snake_case; edges must reference valid ids. Keep the graph **readable**: avoid a hairball — prefer a clear backbone chain or hub structure.\n\
 \n\
 Other constraints:\n\
+- Write summary and minutes in the dominant language of the transcript.\n\
+- minutes: 4-8 keyPoints in chronological order; decisions/actionItems/openQuestions may be empty arrays when the talk has none \
+(a lecture usually has no action items — do not invent them; for a talk, reading suggestions or experiments the speaker recommends are fine).\n\
 - tags: 3-8 relevant topic tags\n\
 - concepts: 3-10 key technical concepts with clear definitions\n\
 - qa: 3-5 PhD interview/defense questions, each with 3-4 answer points\n\
@@ -1234,6 +1409,12 @@ Transcript:\n{}",
         .cloned()
         .unwrap_or_else(|| json!({"topic": "", "keywords": [], "categories": []}));
 
+    let minutes = parsed
+        .get("minutes")
+        .filter(|m| m.is_object())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+
     if summary.is_empty() && qa.is_empty() {
         return Err("model output missing both summary and qa".to_string());
     }
@@ -1247,6 +1428,7 @@ Transcript:\n{}",
         graph_edges,
         references,
         mind_map,
+        minutes,
     })
 }
 
@@ -2015,8 +2197,7 @@ fn call_openrouter_session_qa(
     ))
 }
 
-#[tauri::command]
-fn ask_session_question(
+fn ask_session_question_blocking(
     id: String,
     question: String,
     open_router_api_key: String,
@@ -2648,7 +2829,13 @@ fn check_capture_prerequisites() -> CapturePrerequisites {
     } else {
         notes.push("ffmpeg detected: audio capture can be attempted on default input".to_string());
     }
-    notes.push("Frame sampler interval is configurable (e.g. 2s / 5s / 10s) with content deduplication".to_string());
+    let helper = mac_helper::probe();
+    if helper.system_audio {
+        notes.push("built-in system audio capture available (no BlackHole needed)".to_string());
+    }
+    if helper.available {
+        notes.push("background window capture available".to_string());
+    }
     notes.push("macOS may prompt for Screen Recording and Microphone permissions".to_string());
 
     CapturePrerequisites {
@@ -2751,12 +2938,29 @@ fn cancel_region_selection(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Removes loopback devices (BlackHole etc.) when system audio is captured by the helper, so the
+/// meeting audio is not recorded twice.
+fn without_loopback_specs(specs: &[String]) -> Vec<String> {
+    let Ok(devices) = list_avfoundation_audio_devices() else {
+        return specs.to_vec();
+    };
+    specs
+        .iter()
+        .filter(|spec| {
+            !devices
+                .iter()
+                .any(|d| &d.ffmpeg_spec == *spec && d.is_loopback)
+        })
+        .cloned()
+        .collect()
+}
+
 pub(crate) fn start_capture_session_inner(
     app: AppHandle,
     options: Option<CaptureStartOptions>,
     region: Option<CaptureRegion>,
     display_index: Option<u32>,
-    silent: Option<bool>,
+    window: Option<CaptureWindowTarget>,
 ) -> Result<String, String> {
     let mut store = active_capture_store()
         .lock()
@@ -2766,34 +2970,25 @@ pub(crate) fn start_capture_session_inner(
         return Err("capture session is already running".to_string());
     }
 
-    let timestamp = current_unix_timestamp()?;
-    let session_id = format!("session-{timestamp}");
-    let capture_dir = build_capture_dir(&session_id)?;
-    let session_start_unix_ms = current_unix_timestamp_ms()?;
-    let screenshot_path = capture_dir.join("screen-start.png");
-    let audio_path = capture_dir.join("audio.wav");
-    let audio_log_path = capture_dir.join("audio-ffmpeg.log");
-    let resolved_specs = options
-        .as_ref()
-        .map(|value| value.audio_input_specs.clone())
-        .unwrap_or_else(|| vec!["none:0".to_string()]);
-    let resolved_sample_rate = options
-        .as_ref()
-        .and_then(|value| value.sample_rate)
-        .unwrap_or(16000);
-    let resolved_channels = options
-        .as_ref()
-        .and_then(|value| value.channels)
-        .unwrap_or(1);
-    let resolved_frame_interval = options
-        .as_ref()
-        .and_then(|value| value.frame_interval_sec)
-        .unwrap_or(2)
-        .max(1)
-        .min(60);
+    let options = options.unwrap_or(CaptureStartOptions {
+        audio_input_specs: vec!["none:0".to_string()],
+        sample_rate: None,
+        channels: None,
+        frame_interval_sec: None,
+        system_audio: false,
+        include_microphone: None,
+        live_asr: None,
+        live_segment_sec: None,
+        title: None,
+        auto_stop_on_window_close: None,
+    });
+    let resolved_sample_rate = options.sample_rate.unwrap_or(16000);
+    let resolved_channels = options.channels.unwrap_or(1);
+    let resolved_frame_interval = options.frame_interval_sec.unwrap_or(2).clamp(1, 60);
 
-    let display_index = display_index.filter(|&d| d >= 1);
-    if let Some(d) = display_index {
+    let source = if let Some(w) = window {
+        CaptureSource::Window(Arc::new(Mutex::new(w)))
+    } else if let Some(d) = display_index.filter(|&d| d >= 1) {
         let n = list_capture_displays(app.clone())?.len();
         if n == 0 {
             return Err("no displays detected".to_string());
@@ -2803,61 +2998,166 @@ pub(crate) fn start_capture_session_inner(
                 "display index {d} is out of range (found {n} display(s))"
             ));
         }
-    }
-
-    let region_for_sampler = if display_index.is_some() {
-        None
+        CaptureSource::Display(d)
+    } else if let Some(r) = region {
+        CaptureSource::Region(r)
     } else {
-        region.clone()
+        CaptureSource::Fullscreen
     };
 
-    capture_screenshot(
-        &screenshot_path,
-        region_for_sampler.as_ref(),
-        display_index,
-    )?;
+    let timestamp = current_unix_timestamp()?;
+    let session_id = format!("session-{timestamp}");
+    let capture_dir = build_capture_dir(&session_id)?;
+    let session_start_unix_ms = current_unix_timestamp_ms()?;
+    let screenshot_path = capture_dir.join("screen-start.png");
+
+    if let Err(e) = capture_screenshot(&screenshot_path, &source) {
+        let _ = fs::remove_dir_all(&capture_dir);
+        return Err(e);
+    }
+    let title = options
+        .title
+        .clone()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| match &source {
+            CaptureSource::Window(_) => source.label(),
+            _ => String::new(),
+        });
     write_capture_meta(
         &capture_dir,
-        resolved_frame_interval,
-        session_start_unix_ms,
+        &CaptureMeta {
+            frame_interval_sec: resolved_frame_interval,
+            session_start_unix_ms: Some(session_start_unix_ms),
+            title: (!title.is_empty()).then(|| title.clone()),
+            source: Some(source.kind().to_string()),
+            source_label: Some(source.label()),
+            duration_sec: None,
+        },
     );
-    let initial_hash = screenshot_perceptual_hash(&screenshot_path)?;
-    let audio_process = spawn_audio_capture(
-        &audio_path,
-        &audio_log_path,
-        &resolved_specs,
-        resolved_sample_rate,
-        resolved_channels,
-    )?;
+    let ignore_top = match source {
+        CaptureSource::Fullscreen | CaptureSource::Display(_) => DISPLAY_TOP_IGNORE_FRACTION,
+        _ => 0.0,
+    };
+    let detector = ChangeDetector::new(FrameSignature::from_path(&screenshot_path)?, ignore_top);
+
+    // ---- audio ----
+    let mut warnings: Vec<String> = Vec::new();
+    let mut system_audio_process: Option<Child> = None;
+    let mut system_audio_stdout: Option<ChildStdout> = None;
+    let ffmpeg_ok = ffmpeg_is_available();
+    if !ffmpeg_ok {
+        warnings.push("ffmpeg not found: recording screenshots only (no audio). Install it with `brew install ffmpeg`.".to_string());
+    } else if options.system_audio {
+        match mac_helper::spawn_system_audio(&capture_dir.join("audio-helper.log")) {
+            Ok((child, stdout)) => {
+                system_audio_process = Some(child);
+                system_audio_stdout = Some(stdout);
+            }
+            Err(e) => warnings.push(format!(
+                "Built-in system audio unavailable ({e}). Falling back to the audio devices selected in Settings."
+            )),
+        }
+    }
+    let system_audio = system_audio_process.is_some();
+    let device_specs: Vec<String> = if system_audio {
+        if options.include_microphone.unwrap_or(false) {
+            without_loopback_specs(&options.audio_input_specs)
+        } else {
+            vec![]
+        }
+    } else if options.audio_input_specs.is_empty() {
+        vec!["none:0".to_string()]
+    } else {
+        options.audio_input_specs.clone()
+    };
+
+    let live_cfg = options.live_asr.clone().filter(|cfg| match cfg.validate() {
+        Ok(()) => true,
+        Err(e) => {
+            warnings.push(format!("Live transcription disabled: {e}"));
+            false
+        }
+    });
+    let live_segment_sec = live_cfg
+        .as_ref()
+        .map(|_| options.live_segment_sec.unwrap_or(10).clamp(5, 60));
+    let audio_process = if ffmpeg_ok {
+        spawn_audio_capture(AudioCaptureArgs {
+            audio_path: &capture_dir.join("audio.wav"),
+            log_path: &capture_dir.join("audio-ffmpeg.log"),
+            device_specs: &device_specs,
+            system_audio: system_audio_stdout,
+            sample_rate: resolved_sample_rate,
+            channels: resolved_channels,
+            live_segment_sec,
+            live_dir: &capture_dir.join("live"),
+        })?
+    } else {
+        None
+    };
+    if audio_process.is_none() {
+        if let Some(mut helper) = system_audio_process.take() {
+            let _ = helper.kill();
+            let _ = helper.wait();
+        }
+    }
+
+    let audio_done = Arc::new(AtomicBool::new(false));
+    let live_transcript = match (&audio_process, live_cfg) {
+        (Some(_), Some(cfg)) => {
+            asr::spawn_live_transcriber(
+                app.clone(),
+                session_id.clone(),
+                capture_dir.clone(),
+                cfg,
+                Arc::clone(&audio_done),
+            );
+            true
+        }
+        _ => false,
+    };
+
     let stop_signal = Arc::new(AtomicBool::new(false));
     let pause_signal = Arc::new(AtomicBool::new(false));
-    let sampler_handle = spawn_frame_sampler(
-        capture_dir.clone(),
-        Arc::clone(&stop_signal),
-        Arc::clone(&pause_signal),
-        initial_hash,
-        region_for_sampler.clone(),
-        display_index,
-        resolved_frame_interval,
+    let target_lost = Arc::new(AtomicBool::new(false));
+    let sampler_handle = spawn_frame_sampler(FrameSamplerArgs {
+        app: app.clone(),
+        session_id: session_id.clone(),
+        dir: capture_dir.clone(),
+        stop_signal: Arc::clone(&stop_signal),
+        pause_signal: Arc::clone(&pause_signal),
+        target_lost: Arc::clone(&target_lost),
+        detector,
+        source: source.clone(),
+        frame_interval_sec: resolved_frame_interval,
         session_start_unix_ms,
-    );
+        auto_stop_on_window_close: options.auto_stop_on_window_close.unwrap_or(false),
+    });
 
     println!("start_capture_session invoked: {}", session_id);
 
     *store = Some(ActiveCapture {
         id: session_id.clone(),
         dir: capture_dir,
-        first_screenshot_path: screenshot_path,
         audio_process,
+        system_audio_process,
         frame_sampler_stop: stop_signal,
         frame_sampler_handle: Some(sampler_handle),
         pause_signal,
-        region: region_for_sampler,
-        display_index,
+        source,
         session_start_unix_ms,
+        pause_started_ms: None,
+        paused_total_ms: 0,
+        audio_done,
+        system_audio,
+        live_transcript,
+        target_lost,
+        warnings: warnings.clone(),
+        title,
     });
+    drop(store);
 
-    let _ = silent;
     if app.get_webview_window("floating-controller").is_none() {
         match tauri::WebviewWindowBuilder::new(
             &app,
@@ -2869,7 +3169,7 @@ pub(crate) fn start_capture_session_inner(
         .transparent(true)
         .always_on_top(true)
         .visible_on_all_workspaces(true)
-        .inner_size(280.0, 48.0)
+        .inner_size(FLOAT_WINDOW_W, FLOAT_WINDOW_H)
         .resizable(false)
         .build()
         {
@@ -2880,64 +3180,100 @@ pub(crate) fn start_capture_session_inner(
         }
     }
 
+    let _ = app.emit(
+        "capture-started",
+        json!({ "sessionId": session_id, "warnings": warnings }),
+    );
     Ok(session_id)
 }
 
 #[tauri::command]
-fn start_capture_session(
+async fn start_capture_session(
     options: Option<CaptureStartOptions>,
     region: Option<CaptureRegion>,
     display_index: Option<u32>,
-    silent: Option<bool>,
+    window: Option<CaptureWindowTarget>,
     app: AppHandle,
 ) -> Result<String, String> {
-    start_capture_session_inner(app, options, region, display_index, silent)
+    tauri::async_runtime::spawn_blocking(move || {
+        start_capture_session_inner(app, options, region, display_index, window)
+    })
+    .await
+    .map_err(|e| format!("capture task failed: {e}"))?
 }
 
-#[tauri::command]
-fn stop_capture_session(app: AppHandle) -> Result<String, String> {
-    let mut active_store = active_capture_store()
-        .lock()
-        .map_err(|_| "failed to lock capture state".to_string())?;
+fn stop_capture_session_blocking(app: &AppHandle) -> Result<String, String> {
+    let mut current = {
+        let mut active_store = active_capture_store()
+            .lock()
+            .map_err(|_| "failed to lock capture state".to_string())?;
+        active_store
+            .take()
+            .ok_or_else(|| "no running capture session".to_string())?
+    };
 
-    let mut current = active_store
-        .take()
-        .ok_or_else(|| "no running capture session".to_string())?;
-
-    current.frame_sampler_stop.store(true, Ordering::Relaxed);
-    if let Some(handle) = current.frame_sampler_handle.take() {
-        let _ = handle.join();
+    let stop_ms = current_unix_timestamp_ms()?;
+    if let Some(started) = current.pause_started_ms.take() {
+        asr::append_pause(
+            &current.dir,
+            started.saturating_sub(current.session_start_unix_ms) as f64 / 1000.0,
+            stop_ms.saturating_sub(current.session_start_unix_ms) as f64 / 1000.0,
+        );
     }
+    // Resume everything first: ffmpeg must be able to drain its stdin (fed by the helper) to exit
+    // cleanly after SIGINT.
+    signal_audio_processes(&mut current, false);
+    current.pause_signal.store(false, Ordering::Relaxed);
+    current.frame_sampler_stop.store(true, Ordering::Relaxed);
+    let detector = current
+        .frame_sampler_handle
+        .take()
+        .and_then(|handle| handle.join().ok().flatten());
 
     if let Some(audio_process) = current.audio_process.as_mut() {
-        let _ = audio_process.kill();
-        let _ = audio_process.wait();
+        stop_ffmpeg_gracefully(audio_process);
     }
+    if let Some(helper) = current.system_audio_process.as_mut() {
+        signal_process(helper, SIG_RESUME);
+        let _ = helper.kill();
+        let _ = helper.wait();
+    }
+    current.audio_done.store(true, Ordering::SeqCst);
 
+    // Final screenshot, kept only if it shows something not already on the timeline.
     let end_shot_path = current.dir.join("screen-stop.png");
-    let _ = capture_screenshot(
-        &end_shot_path,
-        current.region.as_ref(),
-        current.display_index,
-    );
-    if let Ok(stop_ms) = current_unix_timestamp_ms() {
-        let offset_sec =
-            (stop_ms.saturating_sub(current.session_start_unix_ms)) as f64 / 1000.0;
-        append_frame_offset_jsonl(&current.dir, "screen-stop.png", offset_sec);
+    if capture_screenshot(&end_shot_path, &current.source).is_ok() {
+        let keep = match (&detector, FrameSignature::from_path(&end_shot_path)) {
+            (Some(d), Ok(sig)) => d.is_new_content(&sig),
+            _ => true,
+        };
+        if keep {
+            let offset_sec =
+                stop_ms.saturating_sub(current.session_start_unix_ms) as f64 / 1000.0;
+            append_frame_offset_jsonl(&current.dir, "screen-stop.png", offset_sec);
+        } else {
+            let _ = fs::remove_file(&end_shot_path);
+        }
     }
+    let _ = fs::remove_file(current.dir.join("frame-tmp.png"));
+
+    let mut meta = read_capture_meta(&current.dir);
+    meta.duration_sec = Some(
+        stop_ms
+            .saturating_sub(current.session_start_unix_ms)
+            .saturating_sub(current.paused_total_ms) as f64
+            / 1000.0,
+    );
+    write_capture_meta(&current.dir, &meta);
 
     println!("stop_capture_session invoked: {}", current.id);
 
-    let finished = CompletedCapture {
-        id: current.id.clone(),
-        dir: current.dir.clone(),
-        first_screenshot_path: current.first_screenshot_path.clone(),
-    };
-
-    let mut last_store = last_capture_store()
-        .lock()
-        .map_err(|_| "failed to lock last capture state".to_string())?;
-    *last_store = Some(finished);
+    if let Ok(mut last_store) = last_capture_store().lock() {
+        *last_store = Some(CompletedCapture {
+            id: current.id.clone(),
+            dir: current.dir.clone(),
+        });
+    }
 
     if let Err(e) = upsert_session_capture_dir_in_index(&current.id, &current.dir) {
         println!("Warning: failed to persist captureDir in sessions_index: {e}");
@@ -2947,25 +3283,34 @@ fn stop_capture_session(app: AppHandle) -> Result<String, String> {
         let _ = win.close();
     }
 
-    let _ = app.emit("capture-stopped", &current.id);
+    let _ = app.emit(
+        "capture-stopped",
+        json!({ "sessionId": current.id, "liveTranscript": current.live_transcript }),
+    );
 
     Ok(current.id)
 }
 
 #[tauri::command]
-fn transcribe_session_audio(
-    id: String,
-    asr_provider: String,
-    asr_endpoint: String,
-    asr_api_key: String,
-    asr_model: String,
-    asr_language: String,
+async fn stop_capture_session(app: AppHandle) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || stop_capture_session_blocking(&app))
+        .await
+        .map_err(|e| format!("stop task failed: {e}"))?
+}
+
+fn transcribe_session_audio_blocking(
+    app: &AppHandle,
+    id: &str,
+    cfg: AsrConfig,
 ) -> Result<String, String> {
-    if is_capture_running(&id) {
+    if is_capture_running(id) {
         return Err("capture is still running. Please click Stop before Transcribe.".to_string());
     }
+    if asr::is_live_transcribing(id) {
+        return Err("Live transcription is still finishing for this session — wait a moment.".to_string());
+    }
 
-    let capture_dir = resolve_capture_dir_for_id(&id)
+    let capture_dir = resolve_capture_dir_for_id(id)
         .ok_or_else(|| format!("capture session not found for id: {id}"))?;
     let audio_path = capture_dir.join("audio.wav");
     if !audio_path.exists() {
@@ -2993,43 +3338,32 @@ fn transcribe_session_audio(
         ));
     }
 
-    if asr_endpoint.trim().is_empty() {
-        return Err("ASR endpoint is empty".to_string());
-    }
-
-    let provider = asr_provider.trim();
-    let transcript = match provider {
-        "whisper_cpp" => call_whisper_cpp(asr_endpoint.trim(), &audio_path, asr_language.trim())?,
-        "openai_compatible" => {
-            if asr_api_key.trim().is_empty() {
-                return Err("ASR API key is empty for openai_compatible provider".to_string());
-            }
-            if asr_model.trim().is_empty() {
-                return Err("ASR model is empty for openai_compatible provider".to_string());
-            }
-            call_openai_compatible_asr(
-                asr_endpoint.trim(),
-                asr_api_key.trim(),
-                asr_model.trim(),
-                &audio_path,
-                asr_language.trim(),
-            )?
-        }
-        _ => {
-            return Err(format!(
-                "Unsupported ASR provider `{provider}`. Use whisper_cpp or openai_compatible."
-            ))
-        }
-    };
-    let transcript_path = capture_dir.join("transcript.txt");
-    fs::write(&transcript_path, transcript.as_bytes())
-        .map_err(|error| format!("failed to write transcript.txt: {error}"))?;
-
-    Ok(transcript_path.to_string_lossy().to_string())
+    asr::transcribe_session(app, id, &capture_dir, &cfg)
 }
 
 #[tauri::command]
-fn refine_transcript_with_visuals(
+async fn transcribe_session_audio(
+    app: AppHandle,
+    id: String,
+    asr_provider: String,
+    asr_endpoint: String,
+    asr_api_key: String,
+    asr_model: String,
+    asr_language: String,
+) -> Result<String, String> {
+    let cfg = AsrConfig {
+        provider: asr_provider,
+        endpoint: asr_endpoint,
+        api_key: asr_api_key,
+        model: asr_model,
+        language: asr_language,
+    };
+    tauri::async_runtime::spawn_blocking(move || transcribe_session_audio_blocking(&app, &id, cfg))
+        .await
+        .map_err(|e| format!("transcription task failed: {e}"))?
+}
+
+fn refine_transcript_with_visuals_blocking(
     id: String,
     open_router_api_key: String,
     open_router_model: String,
@@ -3112,8 +3446,7 @@ Try a larger max output token limit in Settings or a different vision model."
     ))
 }
 
-#[tauri::command]
-fn generate_session_analysis(
+fn generate_session_analysis_blocking(
     id: String,
     open_router_api_key: String,
     open_router_model: String,
@@ -3181,6 +3514,10 @@ fn generate_session_analysis(
         "references.json",
         &serde_json::to_string_pretty(&output.references).unwrap_or_else(|_| "[]".to_string()),
     )?;
+    write(
+        "minutes.json",
+        &serde_json::to_string_pretty(&output.minutes).unwrap_or_else(|_| "{}".to_string()),
+    )?;
 
     if let Err(e) = merge_session_into_knowledge_base(
         &id,
@@ -3210,6 +3547,88 @@ fn generate_session_analysis(
         output.graph_edges.len()
     );
     Ok(format!("Analysis complete (model={used_model}, {stats})"))
+}
+
+#[tauri::command]
+async fn refine_transcript_with_visuals(
+    id: String,
+    open_router_api_key: String,
+    open_router_model: String,
+    open_router_max_tokens: u32,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        refine_transcript_with_visuals_blocking(id, open_router_api_key, open_router_model, open_router_max_tokens)
+    })
+    .await
+    .map_err(|e| format!("refine task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn generate_session_analysis(
+    id: String,
+    open_router_api_key: String,
+    open_router_model: String,
+    open_router_max_tokens: u32,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        generate_session_analysis_blocking(id, open_router_api_key, open_router_model, open_router_max_tokens)
+    })
+    .await
+    .map_err(|e| format!("analysis task failed: {e}"))?
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn ask_session_question(
+    id: String,
+    question: String,
+    open_router_api_key: String,
+    open_router_model: String,
+    open_router_max_tokens: u32,
+    use_web_search: bool,
+    use_prior_sessions: bool,
+    tavily_api_key: String,
+    chat_history: Option<Vec<SessionQaTurn>>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ask_session_question_blocking(
+            id,
+            question,
+            open_router_api_key,
+            open_router_model,
+            open_router_max_tokens,
+            use_web_search,
+            use_prior_sessions,
+            tavily_api_key,
+            chat_history,
+        )
+    })
+    .await
+    .map_err(|e| format!("question task failed: {e}"))?
+}
+
+/// UTC ISO-8601 timestamp (`2026-10-30T09:15:00Z`) without a date crate.
+fn unix_ms_to_iso8601(ms: u64) -> String {
+    let secs = ms / 1000;
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    // Civil-from-days (Howard Hinnant).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
 }
 
 #[tauri::command]
@@ -3309,16 +3728,49 @@ fn get_session_data(id: String) -> String {
         }
     }
 
+    let mut title = String::new();
+    let mut start_ms: Option<u64> = None;
+    let mut duration_sec: Option<f64> = None;
+    let mut minutes = Value::Null;
+    let mut segments: Vec<asr::TranscriptSegment> = vec![];
+    if let Some(dir) = capture_dir.as_ref() {
+        let meta = read_capture_meta(dir);
+        title = meta.title.clone().unwrap_or_default();
+        start_ms = meta.session_start_unix_ms;
+        duration_sec = meta.duration_sec;
+        if title.trim().is_empty() {
+            title = fs::read_to_string(dir.join("mind_map.json"))
+                .ok()
+                .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                .and_then(|mm| mm.get("topic").and_then(Value::as_str).map(str::to_string))
+                .unwrap_or_default();
+        }
+        if let Ok(raw) = fs::read_to_string(dir.join("minutes.json")) {
+            minutes = serde_json::from_str(&raw).unwrap_or(Value::Null);
+        }
+        segments = asr::read_segments(dir);
+    }
+    // Session ids are `session-<unix seconds>`; use that when older captures lack metadata.
+    let start_ms = start_ms.or_else(|| {
+        id.strip_prefix("session-")
+            .and_then(|t| t.parse::<u64>().ok())
+            .map(|t| t * 1000)
+    });
+
     json!({
       "id": id,
-      "title": "Local Capture Session",
-      "date": "2026-03-17T00:00:00Z",
+      "title": if title.trim().is_empty() { "Local Capture Session".to_string() } else { title },
+      "date": start_ms.map(unix_ms_to_iso8601).unwrap_or_default(),
+      "durationSec": duration_sec,
       "tags": tags,
       "concepts": concepts,
       "timeline": timeline,
       "extendedReport": extended_report,
       "qaSimulator": qa_simulator,
-      "references": references
+      "references": references,
+      "minutes": minutes,
+      "transcriptSegments": segments,
+      "captureStatus": capture_status
     })
     .to_string()
 }
@@ -3374,9 +3826,11 @@ fn list_capture_sessions() -> String {
         };
 
         let is_running = is_capture_running(&name);
+        let title = read_capture_meta(&path).title.unwrap_or_default();
 
         sessions.push(json!({
             "id": name,
+            "title": title,
             "hasAudio": has_audio,
             "hasTranscript": has_transcript,
             "hasSummary": has_summary,
@@ -3474,6 +3928,103 @@ fn get_bot_endpoint_status() -> String {
     .to_string()
 }
 
+#[tauri::command]
+fn get_capture_helper_status() -> mac_helper::HelperStatus {
+    mac_helper::probe()
+}
+
+#[tauri::command]
+fn request_screen_recording_permission() -> Result<bool, String> {
+    mac_helper::request_screen_recording_permission()
+}
+
+/// Windows that can be captured in the background, meeting-looking windows first.
+#[tauri::command]
+fn list_capture_windows() -> Result<Vec<CaptureWindowInfo>, String> {
+    let windows = mac_helper::list_windows()?;
+    let mut out: Vec<CaptureWindowInfo> = windows
+        .into_iter()
+        .map(|w| {
+            let score = meeting_join::score_meeting_window(&w, None, "");
+            CaptureWindowInfo {
+                is_meeting: score >= 4,
+                score,
+                window: w,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then(b.window.on_screen.cmp(&a.window.on_screen))
+            .then(a.window.app.to_lowercase().cmp(&b.window.app.to_lowercase()))
+    });
+    Ok(out)
+}
+
+#[tauri::command]
+fn analyze_meeting_link(text: String) -> Option<meeting_join::MeetingLink> {
+    meeting_join::extract_meeting_url(&text).map(|u| meeting_join::analyze_meeting_link(&u))
+}
+
+#[tauri::command]
+async fn join_meeting(
+    app: AppHandle,
+    request: meeting_join::JoinMeetingRequest,
+) -> Result<meeting_join::JoinMeetingResult, String> {
+    tauri::async_runtime::spawn_blocking(move || meeting_join::join_meeting_and_capture(&app, request))
+        .await
+        .map_err(|e| format!("join task failed: {e}"))?
+}
+
+#[tauri::command]
+fn get_live_transcript(id: String) -> Vec<asr::TranscriptSegment> {
+    resolve_capture_dir_for_id(id.trim())
+        .map(|dir| asr::read_segments(&dir))
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn export_session_markdown(
+    id: String,
+    output_path: String,
+    date_label: Option<String>,
+    language: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = resolve_capture_dir_for_id(id.trim())
+            .ok_or_else(|| format!("capture session not found for id: {id}"))?;
+        let out = export::export_session_markdown(
+            id.trim(),
+            &dir,
+            &expand_user_path(&output_path),
+            date_label.as_deref().unwrap_or(""),
+            language.as_deref().unwrap_or("en"),
+        )?;
+        Ok(out.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| format!("export task failed: {e}"))?
+}
+
+#[tauri::command]
+fn reveal_in_finder(path: String) -> Result<(), String> {
+    let path = expand_user_path(&path);
+    #[cfg(target_os = "macos")]
+    let status = Command::new("open").arg("-R").arg(&path).status();
+    #[cfg(target_os = "windows")]
+    let status = Command::new("explorer")
+        .arg(format!("/select,{}", path.to_string_lossy()))
+        .status();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let status = Command::new("xdg-open")
+        .arg(path.parent().unwrap_or(&path))
+        .status();
+    status
+        .map(|_| ())
+        .map_err(|e| format!("failed to reveal file: {e}"))
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -3507,7 +4058,16 @@ fn main() {
             delete_session,
             sync_bot_capture_prefs,
             set_bot_endpoint_config,
-            get_bot_endpoint_status
+            get_bot_endpoint_status,
+            get_capture_status,
+            get_capture_helper_status,
+            request_screen_recording_permission,
+            list_capture_windows,
+            analyze_meeting_link,
+            join_meeting,
+            get_live_transcript,
+            export_session_markdown,
+            reveal_in_finder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

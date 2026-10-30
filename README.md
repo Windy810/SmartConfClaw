@@ -95,27 +95,31 @@ English: Configure capture interval and related analysis behavior to match your 
 
 ## Getting Started / 快速开始
 
+Requirements (macOS): Xcode Command Line Tools (`xcode-select --install`, also builds the Swift capture helper), Rust, Node/Bun, and `ffmpeg` (`brew install ffmpeg`).
+
 1. Install dependencies: `npm install`
-2. Start in dev mode: `npm run tauri dev`
+2. Start in dev mode: `npm run tauri:dev`
+3. Grant **Screen Recording** permission when asked (window capture and system audio need it).
 
-### Floating controller / 悬浮控制条
+## Recording a meeting / 录制会议
 
-- **English:** While recording, a small **transparent** bar stays **on top** and **on all desktops** (Mission Control spaces). **Pause** freezes both screenshot sampling and (on macOS/Linux) the ffmpeg audio process; **Resume** continues; **Stop** ends the session.
-- **中文：** 录制时会有**半透明**小条**置顶**，并勾选 **在所有桌面上显示**（切换调度中心桌面仍可见）。**暂停**会停止定时截屏，并在 macOS/Linux 上对 ffmpeg 录音进程发送暂停信号；**继续**恢复；**停止**结束会话。
+**English**
 
-### Full-screen Space & background capture / 全屏桌面与后台捕获
+- **Join a meeting** (Capture page): paste a Zoom / Teams / Google Meet / Tencent Meeting link — or the whole invitation text. Zoom and Teams links open straight in the desktop client. The app waits for the meeting window, then records it in the background. You can also **schedule** a link: it is joined one minute before the start time while the app is running. The local bot endpoint (`POST /v1/meeting`) uses the same flow.
+- **Meeting window (background)** capture records one app window with `screencapture -l`, so it keeps working while other windows cover it — you can do other work. Don't minimize the meeting window. If the client recreates its window (e.g. switching to share view) the recorder follows it, and with *Stop automatically when the meeting window closes* the session ends when the meeting ends. *Full-screen desktop* and *Region* modes are still available.
+- **Meeting audio without BlackHole**: on macOS 13+ the bundled helper (`src-tauri/helper/CaptureHelper.swift`, ScreenCaptureKit) records what the Mac plays directly — no virtual driver, no changing the sound output. Turn on *Also record my microphone* to mix in your mic. On older macOS the devices selected in Settings (e.g. BlackHole) are used as before.
+- **Live transcript**: with an ASR endpoint configured (whisper.cpp server or OpenAI-compatible), audio is transcribed in ~10 s chunks while recording; captions appear on the Capture page and on the floating bar. When you stop, `transcript.txt` is already done (and *Auto-generate AI summary* can run the analysis automatically). *Transcribe* re-transcribes a recording in 30 s chunks, so long meetings no longer hit upload size limits.
+- **Slide detection**: a screenshot is kept only when the picture changed and then settled. Webcam tiles / video areas that change constantly are ignored, transitions are captured once in their final state, and going back to a recent slide does not create a duplicate.
+- **Export Markdown**: writes meeting minutes — summary, key points / decisions / action items, each slide with what was said while it was shown, concepts, references and Q&A — plus a `<name>_assets/` folder with the screenshots.
 
-- **English:** On macOS, a **full-screen app** lives on its own **Space** (the extra “desktop” you see in Mission Control). The app’s **Full-screen desktop (per monitor)** mode captures a **physical monitor**—whatever pixels are **currently visible** on that screen (including that full-screen Space). It is **not** a separate API for “this Space only in the background”: if you switch to another Space on the **same** monitor, the recording shows that Space. For **slides on one screen + work on another**, use **two displays** and choose the monitor that shows the full-screen presentation.
-- **中文：** macOS 全屏应用会进入**独立桌面（Space）**，也就是调度中心里多出来的那一页。应用里的 **全屏桌面（按显示器）** 是按**物理显示器**定时截屏：录到的是该显示器**当前画面上**的内容（包括全屏时的那一页）。**不能**在系统层面单独“只录某个隐藏 Space、你却在同一屏上干别的活”；若在同一显示器上切换桌面，画面会跟着变。若需要「一屏全屏放幻灯片、另一屏做笔记」，请使用**双显示器**，并选择放演示的那一屏。
+**中文**
 
-### macOS system audio (loopback) / macOS 系统内录
-
-- **English:** macOS cannot capture “what the speakers play” without a virtual loopback device. Install something like [BlackHole](https://github.com/ExistentialAudio/BlackHole), set **System Settings → Sound → Output** to BlackHole, then refresh the audio device list in **Settings** — the device appears under **System audio (loopback)** and can be mixed with your mic.
-- **中文：** macOS 不能像 Windows 那样直接立体声混音内录。请安装虚拟声卡（如 [BlackHole](https://github.com/ExistentialAudio/BlackHole)），在「系统设置 → 声音」将输出设为 BlackHole，再在应用「设置」里刷新音频设备列表，即可在「系统内录」中勾选，并可与麦克风同时混音。
-
-如果你已经完成本地配置与密钥填写，打开应用后：
-1) 在“Meeting Capture”选择区域开始捕获  
-2) 完成转写与 AI 分析后查看总结/概念/知识图谱/问答  
+- **加入会议**（会议捕获页）：粘贴 Zoom / Teams / Google Meet / 腾讯会议链接（或整段邀请文字）。Zoom、Teams 会直接在客户端打开；应用会等待会议窗口出现，然后在后台录制该窗口。也可以**定时加入**：应用运行时会在开始前 1 分钟自动入会。本机机器人接口（`POST /v1/meeting`）走同样的流程。
+- **会议窗口（后台）** 模式用 `screencapture -l` 只录制会议窗口，即使被其它窗口挡住也能录，你可以同时做别的事（请勿最小化会议窗口）。会议软件重建窗口时会自动跟随；开启「会议窗口关闭后自动停止」后，会议结束即自动停止。仍保留「全屏桌面」与「框选区域」模式。
+- **无需 BlackHole 录会议声音**：macOS 13+ 上，内置助手（ScreenCaptureKit）直接录制电脑播放的声音，无需虚拟声卡、无需切换输出设备。勾选「同时录制我的麦克风」可混入麦克风。旧版 macOS 仍使用设置中选择的设备（如 BlackHole）。
+- **实时转写**：配置 ASR（whisper.cpp 或 OpenAI 兼容接口）后，录制时每约 10 秒转写一段，字幕显示在页面和悬浮条上；停止时转写稿已完成，可自动生成 AI 摘要。「语音转写」按钮按 30 秒分段重新转写，长会议不再超出上传大小限制。
+- **翻页检测**：画面变化并稳定后才保存一页；持续变化的视频小窗会被忽略，转场动画只保存最终画面，翻回最近的页面不会重复保存。
+- **导出 Markdown**：生成会议纪要（摘要、要点/结论/待办、每页幻灯片及对应讲解、概念、参考文献、问答），截图保存在同名 `_assets` 文件夹中。
 
 ## License / 许可协议
 

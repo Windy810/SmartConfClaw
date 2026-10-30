@@ -132,6 +132,11 @@ export function SettingsPanel(): JSX.Element {
 	const [draftAsrApiKey, setDraftAsrApiKey] = useState<string>(asrApiKey);
 	const [draftAsrModel, setDraftAsrModel] = useState<string>(asrModel);
 	const [draftAsrLanguage, setDraftAsrLanguage] = useState<string>(asrLanguage);
+	const liveSegmentSec = useSettingsStore((state) => state.liveSegmentSec);
+	const setLiveSegmentSec = useSettingsStore((state) => state.setLiveSegmentSec);
+	const [draftLiveSegmentSec, setDraftLiveSegmentSec] = useState<string>(
+		String(liveSegmentSec),
+	);
 	const [draftOpenRouterModel, setDraftOpenRouterModel] =
 		useState<string>(openRouterModel);
 	const [draftOpenRouterApiKey, setDraftOpenRouterApiKey] =
@@ -691,6 +696,24 @@ export function SettingsPanel(): JSX.Element {
 						className={inputCls}
 						placeholder="ASR API key (if required)"
 					/>
+					<label
+						htmlFor="live-segment-sec"
+						className="block pt-1 text-xs font-medium text-zinc-700 dark:text-zinc-200"
+					>
+						{t("settings.liveSegmentSec")}
+					</label>
+					<input
+						id="live-segment-sec"
+						type="number"
+						min={5}
+						max={60}
+						value={draftLiveSegmentSec}
+						onChange={(event) => setDraftLiveSegmentSec(event.target.value)}
+						className={inputCls}
+					/>
+					<p className="text-xs text-zinc-500 dark:text-zinc-400">
+						{t("settings.liveSegmentSecDesc")}
+					</p>
 					<Button
 						size="sm"
 						variant="outline"
@@ -699,6 +722,9 @@ export function SettingsPanel(): JSX.Element {
 							setAsrApiKey(draftAsrApiKey);
 							setAsrModel(draftAsrModel);
 							setAsrLanguage(draftAsrLanguage);
+							setLiveSegmentSec(
+								Number.parseInt(draftLiveSegmentSec, 10) || 10,
+							);
 						}}
 					>
 						{t("settings.saveAsrConfig")}

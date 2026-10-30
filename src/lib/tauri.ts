@@ -1,11 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import { homeDir } from "@tauri-apps/api/path";
-import { open } from "@tauri-apps/plugin-dialog";
+import { downloadDir, homeDir, join } from "@tauri-apps/api/path";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
 	AcademicSession,
 	GlobalMindMapFile,
 	KnowledgeGraph,
 	MindMapCategory,
+	TranscriptSegment,
 } from "../types";
 import { normalizeGraphEdge, normalizeGraphNode } from "./graphNormalize";
 import { mockAcademicSession } from "./mockData";
@@ -52,12 +53,77 @@ export interface AudioInputDevice {
 	isLoopback?: boolean;
 }
 
+export interface LiveAsrConfig {
+	provider: "whisper_cpp" | "openai_compatible";
+	endpoint: string;
+	apiKey: string;
+	model: string;
+	language: string;
+}
+
 export interface CaptureStartOptions {
 	audioInputSpecs: string[];
 	sampleRate: number;
 	channels: number;
 	frameIntervalSec: number;
+	/** Record system playback via the built-in helper (macOS 13+). */
+	systemAudio?: boolean;
+	/** With systemAudio: also mix in `audioInputSpecs` microphones. */
+	includeMicrophone?: boolean;
+	/** Transcribe while recording; null disables live captions. */
+	liveAsr?: LiveAsrConfig | null;
+	liveSegmentSec?: number;
+	title?: string | null;
+	autoStopOnWindowClose?: boolean;
 }
+
+/** A specific app window to capture in the background. */
+export interface CaptureWindowTarget {
+	windowId: number;
+	app: string;
+	title: string;
+}
+
+export interface CaptureWindowInfo {
+	id: number;
+	pid: number;
+	app: string;
+	bundleId: string;
+	title: string;
+	width: number;
+	height: number;
+	onScreen: boolean;
+	/** Looks like an online-meeting window (Zoom, Teams, Meet tab, …). */
+	isMeeting: boolean;
+	score: number;
+}
+
+export interface CaptureHelperStatus {
+	/** Window listing / background window capture available. */
+	available: boolean;
+	/** Built-in system audio (ScreenCaptureKit, macOS 13+). */
+	systemAudio: boolean;
+	screenRecording: boolean;
+	osVersion: string;
+	detail: string;
+}
+
+export interface CaptureStatus {
+	running: boolean;
+	sessionId?: string;
+	title?: string;
+	paused?: boolean;
+	elapsedSec?: number;
+	source?: "window" | "display" | "region" | "fullscreen";
+	sourceLabel?: string;
+	systemAudio?: boolean;
+	liveTranscript?: boolean;
+	recordingAudio?: boolean;
+	targetLost?: boolean;
+	warnings?: string[];
+}
+
+export type { TranscriptSegment };
 
 export interface CaptureRegion {
 	x: number;
@@ -213,7 +279,7 @@ export async function startCaptureSession(args: {
 	options: CaptureStartOptions;
 	region?: CaptureRegion | null;
 	displayIndex?: number | null;
-	silent?: boolean;
+	window?: CaptureWindowTarget | null;
 }): Promise<string> {
 	if (!isTauriRuntime()) {
 		return "session-web-preview";
@@ -222,8 +288,148 @@ export async function startCaptureSession(args: {
 		options: args.options,
 		region: args.region ?? null,
 		displayIndex: args.displayIndex ?? null,
-		silent: args.silent ?? null,
+		window: args.window ?? null,
 	});
+}
+
+export async function getCaptureStatus(): Promise<CaptureStatus> {
+	if (!isTauriRuntime()) {
+		return { running: false };
+	}
+	return invoke<CaptureStatus>("get_capture_status");
+}
+
+export async function getCaptureHelperStatus(): Promise<CaptureHelperStatus> {
+	if (!isTauriRuntime()) {
+		return {
+			available: false,
+			systemAudio: false,
+			screenRecording: false,
+			osVersion: "web",
+			detail: "Web preview mode",
+		};
+	}
+	return invoke<CaptureHelperStatus>("get_capture_helper_status");
+}
+
+export async function requestScreenRecordingPermission(): Promise<boolean> {
+	if (!isTauriRuntime()) {
+		return false;
+	}
+	return invoke<boolean>("request_screen_recording_permission");
+}
+
+export async function listCaptureWindows(): Promise<CaptureWindowInfo[]> {
+	if (!isTauriRuntime()) {
+		return [];
+	}
+	return invoke<CaptureWindowInfo[]>("list_capture_windows");
+}
+
+export interface MeetingLink {
+	platform: string;
+	webUrl: string;
+	nativeUrl: string | null;
+}
+
+/** Finds a meeting link in pasted text (e.g. a calendar invitation). */
+export async function analyzeMeetingLink(
+	text: string,
+): Promise<MeetingLink | null> {
+	if (!isTauriRuntime()) {
+		const match = text.match(/https?:\/\/\S+/);
+		return match
+			? { platform: "web", webUrl: match[0], nativeUrl: null }
+			: null;
+	}
+	return invoke<MeetingLink | null>("analyze_meeting_link", { text });
+}
+
+export interface JoinMeetingResult {
+	sessionId: string;
+	platform: string;
+	captured: "window" | "display";
+	windowTitle: string;
+}
+
+export async function joinMeeting(request: {
+	meeting: string;
+	capture: CaptureStartOptions;
+	fallbackDisplayIndex?: number;
+	waitWindowSec?: number;
+	minimizeMain?: boolean;
+}): Promise<JoinMeetingResult> {
+	if (!isTauriRuntime()) {
+		throw new Error("Joining meetings needs the desktop app.");
+	}
+	return invoke<JoinMeetingResult>("join_meeting", {
+		request: {
+			meeting: request.meeting,
+			capture: request.capture,
+			fallbackDisplayIndex: request.fallbackDisplayIndex ?? null,
+			waitWindowSec: request.waitWindowSec ?? null,
+			minimizeMain: request.minimizeMain ?? false,
+		},
+	});
+}
+
+export async function getLiveTranscript(
+	id: string,
+): Promise<TranscriptSegment[]> {
+	if (!isTauriRuntime()) {
+		return [];
+	}
+	return invoke<TranscriptSegment[]>("get_live_transcript", { id });
+}
+
+function safeFileName(name: string): string {
+	const cleaned = name
+		.replace(/[\\/:*?"<>|\n\r\t]+/g, " ")
+		.replace(/\s+/g, " ")
+		.trim()
+		.slice(0, 80);
+	return cleaned || "meeting-notes";
+}
+
+/**
+ * Asks where to save, then writes Markdown minutes + an `_assets` folder with the slides.
+ * Returns the written path, or null if the dialog was cancelled.
+ */
+export async function exportSessionMarkdown(args: {
+	id: string;
+	suggestedName: string;
+	dateLabel: string;
+	language: string;
+}): Promise<string | null> {
+	if (!isTauriRuntime()) {
+		throw new Error("Markdown export needs the desktop app.");
+	}
+	let defaultPath = `${safeFileName(args.suggestedName)}.md`;
+	try {
+		defaultPath = await join(await downloadDir(), defaultPath);
+	} catch {
+		// keep the bare file name
+	}
+	const target = await save({
+		defaultPath,
+		filters: [{ name: "Markdown", extensions: ["md"] }],
+	});
+	if (!target) {
+		return null;
+	}
+	return invoke<string>("export_session_markdown", {
+		id: args.id,
+		outputPath: target,
+		dateLabel: args.dateLabel,
+		language: args.language,
+	});
+}
+
+export async function revealInFinder(path: string): Promise<void> {
+	if (!isTauriRuntime()) {
+		return;
+	}
+	return invoke<void>("reveal_in_finder", { path });
 }
 
 export async function stopCaptureSession(): Promise<string> {
@@ -249,6 +455,7 @@ export async function getCapturePaused(): Promise<boolean> {
 
 export interface CaptureSessionMeta {
 	id: string;
+	title?: string;
 	hasAudio: boolean;
 	hasTranscript: boolean;
 	hasSummary: boolean;
@@ -425,6 +632,10 @@ export interface BotCapturePrefsPayload {
 	frameIntervalSec: number;
 	captureDisplayIndex: number;
 	silentCaptureMinimizeMain: boolean;
+	systemAudio: boolean;
+	includeMicrophone: boolean;
+	liveAsr: LiveAsrConfig | null;
+	liveSegmentSec: number;
 }
 
 export async function syncBotCapturePrefs(

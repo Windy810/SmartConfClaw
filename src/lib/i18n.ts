@@ -36,10 +36,93 @@ const en = {
 	"capture.fullscreenSpaceExplainer":
 		"On macOS, a full-screen app uses a separate Space (Mission Control “desktop”). This mode records the monitor’s current pixels each interval—so stay on the Space you want, or use a second monitor for slides while you work on the other screen. Switching Spaces on the same monitor changes what is recorded.",
 	"capture.minimizeOnStart": "Minimize app when capture starts",
-	"capture.backgroundStarted": "Background capture started: {id}",
+	"capture.backgroundStarted": "Recording started: {id}",
 	"capture.botStarted": "Capture started from bot: {id}",
 	"capture.noDisplays":
 		"No displays found. Click Refresh or check Screen Recording permission.",
+
+	// Capture: sources, audio, live transcript
+	"capture.sourceWindow": "Meeting window (background)",
+	"capture.selectWindow": "Window",
+	"capture.windowAuto": "Auto-detect meeting window",
+	"capture.windowOffscreen": "other Space",
+	"capture.windowHint":
+		"Records only this window, even while other windows cover it — keep working in other apps. Don't minimize it. If the app recreates the window (e.g. entering share view) the recorder follows it.",
+	"capture.autoStopOnClose": "Stop automatically when the meeting window closes",
+	"capture.windowUnavailable":
+		"Window capture needs the macOS capture helper (built with Xcode command line tools).",
+	"capture.audioAndTranscript": "Audio & transcript",
+	"capture.systemAudio": "Record meeting audio (system sound)",
+	"capture.systemAudioHint":
+		"Captures what your Mac plays — Zoom, Teams, browser — directly. No BlackHole or audio routing needed; you still hear everything normally.",
+	"capture.systemAudioUnavailable":
+		"Needs macOS 13 or later. The input devices from Settings (e.g. BlackHole) are used instead.",
+	"capture.includeMic": "Also record my microphone",
+	"capture.includeMicHint":
+		"Mixes in the microphones selected in Settings → Audio Inputs (for when you speak).",
+	"capture.devicesUsedHint":
+		"Without system audio, the input devices selected in Settings are recorded.",
+	"capture.liveTranscript": "Live transcript",
+	"capture.liveTranscriptHint":
+		"Transcribes in small chunks while recording; captions appear here and on the floating bar. The transcript is ready when you stop.",
+	"capture.liveTranscriptNoAsr":
+		"Configure an ASR endpoint in Settings to enable live transcription.",
+	"capture.permissionMissing":
+		"Screen Recording permission is not granted yet — window capture and system audio need it.",
+	"capture.permissionGrant": "Grant permission",
+	"capture.noMeetingWindow":
+		"No meeting window found. Open the meeting first, or pick a window from the list.",
+	"capture.autoStopped": "The meeting window closed — capture stopped automatically.",
+	"capture.targetLost":
+		"Can't see the captured window (closed or minimized?). Waiting for it to come back…",
+	"capture.transcribeProgress": "Transcribing… {done}/{total} chunks",
+	"capture.transcribeHint":
+		"Transcribe the recorded audio in 30-second chunks (timestamped). Not needed when live transcript was on.",
+	"capture.analyzing": "Generating AI summary and minutes…",
+	"capture.sessionTools": "Session",
+
+	// Live transcript
+	"live.title": "Live transcript",
+	"live.listening": "Listening",
+	"live.finished": "Done",
+	"live.waiting":
+		"Waiting for speech… the first lines appear a few seconds after someone talks.",
+	"live.empty": "No speech was transcribed.",
+	"live.error": "Transcription error:",
+	"live.finishedMessage": "Transcript ready ({count} segments).",
+
+	// Join meeting
+	"join.title": "Join a meeting",
+	"join.subtitle":
+		"Paste a Zoom / Teams / Meet / Tencent Meeting link (or the whole invitation). The app opens it, finds the meeting window and starts recording in the background.",
+	"join.linkPlaceholder": "https://zoom.us/j/… or paste the invitation text",
+	"join.titlePlaceholder": "Title (optional), e.g. Lab seminar",
+	"join.opensApp": "opens directly in the desktop app",
+	"join.opensBrowser": "opens in the browser / app handler",
+	"join.noLink": "No meeting link found in the text.",
+	"join.joinNow": "Join & record now",
+	"join.or": "or at",
+	"join.schedule": "Schedule",
+	"join.hint":
+		"Scheduled meetings are joined one minute before start while this app is running. Tip: enable “automatically join audio by computer” in your meeting client.",
+	"join.busy": "A capture is already running.",
+	"join.recordingWindow": "Recording meeting window: {window}",
+	"join.recordingDisplay":
+		"Meeting window not found — recording the whole display instead.",
+	"join.failed": "Could not join",
+	"join.statusScheduled": "Scheduled",
+	"join.statusJoining": "Joining…",
+	"join.statusJoined": "Recorded",
+	"join.statusFailed": "Failed",
+	"join.statusMissed": "Missed",
+
+	// Export
+	"export.button": "Export Markdown",
+	"export.hint":
+		"Save meeting minutes as Markdown: summary, minutes, slides with what was said, concepts, references. Screenshots go into a folder next to the file.",
+	"export.done": "Exported: {path}",
+	"export.failed": "Export failed",
+	"export.reveal": "Show in Finder",
 
 	// Session picker
 	"sessions.title": "Local Sessions",
@@ -61,6 +144,14 @@ const en = {
 
 	// SessionViewer
 	"viewer.noTimeline": "No timeline data",
+	"viewer.minutes": "Meeting minutes",
+	"viewer.keyPoints": "Key points",
+	"viewer.decisions": "Decisions / conclusions",
+	"viewer.actionItems": "Action items",
+	"viewer.openQuestions": "Open questions",
+	"viewer.fullTranscript": "Full transcript",
+	"viewer.show": "Show",
+	"viewer.duration": "Duration",
 	"viewer.originalTranscript": "Original Transcript",
 	"viewer.aiAnalysis": "AI Analysis",
 	"viewer.summary": "Summary",
@@ -138,6 +229,11 @@ const en = {
 	"float.pause": "Pause",
 	"float.resume": "Resume",
 	"float.dragHandle": "Drag to move window",
+	"float.targetLost": "Window not visible — waiting…",
+	"float.systemAudio": "system audio",
+	"float.micAudio": "input devices",
+	"float.noAudio": "no audio",
+	"float.liveOn": "live captions",
 
 	// RegionSelector
 	"region.dragHint": "Drag to select capture region",
@@ -161,7 +257,7 @@ const en = {
 	"settings.saveDir": "Save Directory",
 	"settings.audioInputs": "Audio Inputs (multi-source)",
 	"settings.audioInputsHint":
-		"Select one or more inputs to mix. Order follows the list below.",
+		"Microphones to mix in (used when “Also record my microphone” is on, or when system audio is unavailable).",
 	"settings.refreshAudioDevices": "Refresh device list",
 	"settings.audioOrphanSpecs":
 		"Saved specs not in current list (uncheck to remove)",
@@ -171,15 +267,15 @@ const en = {
 	"settings.audioLoopbackSection": "System audio (loopback / internal capture)",
 	"settings.audioLoopbackBadge": "Loopback",
 	"settings.audioLoopbackEmpty":
-		"macOS cannot capture “what the computer plays” directly. Install a free virtual loopback driver (e.g. BlackHole 2ch), set System Settings › Sound › Output to BlackHole, then refresh — the device appears here. You can check it together with a mic and mix in one recording.",
+		"Meeting audio is recorded with the built-in system audio capture (macOS 13+, toggle on the Capture page) — no driver needed. Only on older macOS: install a virtual loopback driver such as BlackHole 2ch, route Sound › Output to it, then refresh.",
 	"settings.audioDeviceErrorTitle": "Could not load audio devices",
 	"settings.frameInterval": "Frame Interval (seconds)",
 	"settings.frameIntervalDesc":
-		"How often to grab a screenshot while capturing (independent of audio sample rate).",
+		"How often the screen is checked. A slide is saved once it changed and settled; unchanged screens, video tiles and repeats are skipped.",
 	"settings.frameIntervalHint": "Examples: 2 / 5 / 10",
 	"settings.saveFrameInterval": "Save frame interval",
 	"settings.saveAudioConfig": "Save Audio Capture Config",
-	"settings.autoSummarize": "Auto summarize while capturing",
+	"settings.autoSummarize": "Auto-generate AI summary & minutes when the live transcript is ready",
 	"settings.appearance": "Appearance",
 	"settings.appearanceDesc": "Choose light, dark, or follow system appearance.",
 	"settings.language": "Language",
@@ -188,6 +284,9 @@ const en = {
 	"settings.asr": "Speech-to-Text (ASR)",
 	"settings.asrDesc": "Switch provider and language for transcription.",
 	"settings.saveAsrConfig": "Save ASR Config",
+	"settings.liveSegmentSec": "Live transcript chunk length (seconds)",
+	"settings.liveSegmentSecDesc":
+		"Shorter = captions appear sooner; longer = better accuracy and fewer requests. 8–15 s works well.",
 	"settings.openRouter": "OpenRouter",
 	"settings.openRouterDesc":
 		"Reserved for LLM summarization and question generation API calls.",
@@ -204,7 +303,7 @@ const en = {
 	"settings.persistentZustand": "Persistent via Zustand",
 	"settings.botEndpoint": "Bot / automation hook",
 	"settings.botEndpointDesc":
-		"Local HTTP API on this machine. Send a meeting link (Zoom, Teams, Meet, Webex, etc.); the app opens it in the default browser or client and starts full-display capture using your current audio/frame settings above.",
+		"Local HTTP API on this machine. Send a meeting link (Zoom, Teams, Meet, Webex, etc.); the app joins it like “Join a meeting” on the Capture page (native client, meeting-window capture, system audio, live transcript) using your current settings.",
 	"settings.botEndpointEnable": "Enable localhost listener",
 	"settings.botEndpointPort": "Port",
 	"settings.botEndpointSecret": "Shared secret (optional)",
@@ -253,9 +352,85 @@ const zh: Record<string, string> = {
 	"capture.fullscreenSpaceExplainer":
 		"macOS 进入全屏后会有独立「桌面」（调度中心里多出来的那一页）。本模式按固定间隔截取**整块物理显示器**的当前画面：请先切到要录的全屏/桌面再点开始；若在同一块屏上切换到别的桌面，画面会跟着变。若希望一边录全屏幻灯片、一边在本机做别的事，建议使用**双屏**（一屏放全屏演示、另一屏办公）。",
 	"capture.minimizeOnStart": "开始捕获时最小化主窗口",
-	"capture.backgroundStarted": "后台捕获已开始：{id}",
+	"capture.backgroundStarted": "已开始录制：{id}",
 	"capture.botStarted": "已通过机器人开始捕获：{id}",
 	"capture.noDisplays": "未检测到显示器，请点击刷新或检查「屏幕录制」权限。",
+
+	// Capture: sources, audio, live transcript
+	"capture.sourceWindow": "会议窗口（后台）",
+	"capture.selectWindow": "窗口",
+	"capture.windowAuto": "自动识别会议窗口",
+	"capture.windowOffscreen": "其它桌面",
+	"capture.windowHint":
+		"只录制这个窗口，即使被其它窗口挡住也能录——可以放心切去做别的事。请不要最小化它。若会议软件重建窗口（如进入共享视图），会自动跟随。",
+	"capture.autoStopOnClose": "会议窗口关闭后自动停止",
+	"capture.windowUnavailable":
+		"窗口捕获需要 macOS 捕获助手（使用 Xcode 命令行工具构建）。",
+	"capture.audioAndTranscript": "音频与转写",
+	"capture.systemAudio": "录制会议声音（系统声音）",
+	"capture.systemAudioHint":
+		"直接录制电脑正在播放的声音（Zoom、Teams、浏览器等），无需安装 BlackHole、无需切换输出设备，你照常能听到。",
+	"capture.systemAudioUnavailable":
+		"需要 macOS 13 或更高版本；将改用设置中选择的输入设备（如 BlackHole）。",
+	"capture.includeMic": "同时录制我的麦克风",
+	"capture.includeMicHint": "混入「设置 → 音频输入」中勾选的麦克风（自己要发言时打开）。",
+	"capture.devicesUsedHint": "未使用系统声音时，将录制设置中勾选的输入设备。",
+	"capture.liveTranscript": "实时转写",
+	"capture.liveTranscriptHint":
+		"录制时分小段转写，字幕显示在此处和悬浮条上；停止时转写稿即已完成。",
+	"capture.liveTranscriptNoAsr": "请先在设置中配置 ASR 服务地址以启用实时转写。",
+	"capture.permissionMissing":
+		"尚未授予「屏幕录制」权限——窗口捕获与系统声音都需要该权限。",
+	"capture.permissionGrant": "去授权",
+	"capture.noMeetingWindow": "没有找到会议窗口。请先打开会议，或在列表中手动选择窗口。",
+	"capture.autoStopped": "会议窗口已关闭，已自动停止捕获。",
+	"capture.targetLost": "看不到被录制的窗口（已关闭或最小化？），等待其恢复…",
+	"capture.transcribeProgress": "转写中… {done}/{total} 段",
+	"capture.transcribeHint":
+		"将录音按 30 秒分段转写（带时间戳）。若录制时已开启实时转写则无需再点。",
+	"capture.analyzing": "正在生成 AI 摘要与会议纪要…",
+	"capture.sessionTools": "会话",
+
+	// Live transcript
+	"live.title": "实时转写",
+	"live.listening": "收听中",
+	"live.finished": "已完成",
+	"live.waiting": "等待发言… 有人说话几秒后会出现第一行字幕。",
+	"live.empty": "没有转写到语音。",
+	"live.error": "转写出错：",
+	"live.finishedMessage": "转写稿已生成（{count} 段）。",
+
+	// Join meeting
+	"join.title": "加入会议",
+	"join.subtitle":
+		"粘贴 Zoom / Teams / Meet / 腾讯会议链接（或整段会议邀请），应用会自动打开会议、找到会议窗口并在后台开始录制。",
+	"join.linkPlaceholder": "https://zoom.us/j/… 或粘贴整段邀请文字",
+	"join.titlePlaceholder": "标题（可选），如：组会报告",
+	"join.opensApp": "将直接在客户端中打开",
+	"join.opensBrowser": "将通过浏览器 / 系统关联程序打开",
+	"join.noLink": "文本中没有找到会议链接。",
+	"join.joinNow": "立即加入并录制",
+	"join.or": "或于",
+	"join.schedule": "定时加入",
+	"join.hint":
+		"应用保持运行时，会在开始前 1 分钟自动加入已预约的会议。建议在会议客户端中开启「自动使用电脑音频」。",
+	"join.busy": "已有捕获正在进行。",
+	"join.recordingWindow": "正在录制会议窗口：{window}",
+	"join.recordingDisplay": "未找到会议窗口，改为录制整块屏幕。",
+	"join.failed": "加入失败",
+	"join.statusScheduled": "已预约",
+	"join.statusJoining": "加入中…",
+	"join.statusJoined": "已录制",
+	"join.statusFailed": "失败",
+	"join.statusMissed": "已错过",
+
+	// Export
+	"export.button": "导出 Markdown",
+	"export.hint":
+		"将会议纪要导出为 Markdown：摘要、纪要、每页幻灯片及对应讲解、概念、参考文献；截图保存在文件旁的文件夹中。",
+	"export.done": "已导出：{path}",
+	"export.failed": "导出失败",
+	"export.reveal": "在访达中显示",
 
 	// Session picker
 	"sessions.title": "本地会话",
@@ -277,6 +452,14 @@ const zh: Record<string, string> = {
 
 	// SessionViewer
 	"viewer.noTimeline": "暂无时间轴数据",
+	"viewer.minutes": "会议纪要",
+	"viewer.keyPoints": "要点",
+	"viewer.decisions": "结论 / 决定",
+	"viewer.actionItems": "待办事项",
+	"viewer.openQuestions": "待解决问题",
+	"viewer.fullTranscript": "转写全文",
+	"viewer.show": "展开",
+	"viewer.duration": "时长",
 	"viewer.originalTranscript": "原始转录",
 	"viewer.aiAnalysis": "AI 分析",
 	"viewer.summary": "摘要",
@@ -349,6 +532,11 @@ const zh: Record<string, string> = {
 	"float.pause": "暂停",
 	"float.resume": "继续",
 	"float.dragHandle": "拖拽以移动窗口",
+	"float.targetLost": "看不到窗口，等待中…",
+	"float.systemAudio": "系统声音",
+	"float.micAudio": "输入设备",
+	"float.noAudio": "无音频",
+	"float.liveOn": "实时字幕",
 
 	// RegionSelector
 	"region.dragHint": "拖拽鼠标选择截屏区域",
@@ -369,7 +557,7 @@ const zh: Record<string, string> = {
 	"settings.saveDir": "保存目录",
 	"settings.audioInputs": "音频输入（多源）",
 	"settings.audioInputsHint":
-		"勾选需要采集的输入（可多选混音）。顺序与下方列表一致。",
+		"需要混入的麦克风（开启「同时录制我的麦克风」或系统声音不可用时使用）。",
 	"settings.refreshAudioDevices": "刷新设备列表",
 	"settings.audioOrphanSpecs": "已保存但当前列表中无此设备（取消勾选可移除）",
 	"settings.audioNoDevices":
@@ -378,15 +566,15 @@ const zh: Record<string, string> = {
 	"settings.audioLoopbackSection": "系统内录（电脑播放的声音）",
 	"settings.audioLoopbackBadge": "内录",
 	"settings.audioLoopbackEmpty":
-		"macOS 无法像 Windows 那样直接「立体声混音」内录。请安装虚拟声卡（推荐免费 BlackHole 2ch），在「系统设置 › 声音」把输出设为 BlackHole，再点刷新，列表中会出现对应设备；可与麦克风同时勾选，由 FFmpeg 混音录制。",
+		"会议声音默认由内置的系统声音捕获录制（macOS 13+，在「会议捕获」页开关），无需安装任何驱动。仅旧版 macOS 需要安装虚拟声卡（如 BlackHole 2ch）并将声音输出设为它，再点刷新。",
 	"settings.audioDeviceErrorTitle": "无法加载音频设备",
 	"settings.frameInterval": "截图间隔（秒）",
 	"settings.frameIntervalDesc":
-		"录制过程中多久截取一次屏幕画面（与音频采样率无关）。",
+		"多久检查一次画面。画面变化并稳定后才保存一页；未变化的画面、视频小窗和重复页会被跳过。",
 	"settings.frameIntervalHint": "例如：2 / 5 / 10",
 	"settings.saveFrameInterval": "保存截图间隔",
 	"settings.saveAudioConfig": "保存音频配置",
-	"settings.autoSummarize": "捕获时自动摘要",
+	"settings.autoSummarize": "实时转写完成后自动生成 AI 摘要与纪要",
 	"settings.appearance": "外观",
 	"settings.appearanceDesc": "选择浅色、深色或跟随系统外观。",
 	"settings.language": "语言",
@@ -395,6 +583,9 @@ const zh: Record<string, string> = {
 	"settings.asr": "语音转文字 (ASR)",
 	"settings.asrDesc": "切换转写服务提供商和语言。",
 	"settings.saveAsrConfig": "保存 ASR 配置",
+	"settings.liveSegmentSec": "实时转写分段长度（秒）",
+	"settings.liveSegmentSecDesc":
+		"越短字幕出现越快；越长准确率越高、请求越少。建议 8–15 秒。",
 	"settings.openRouter": "OpenRouter",
 	"settings.openRouterDesc": "用于 LLM 摘要和问题生成的 API 调用。",
 	"settings.openRouterModel": "模型",
@@ -410,7 +601,7 @@ const zh: Record<string, string> = {
 	"settings.persistentZustand": "通过 Zustand 持久化",
 	"settings.botEndpoint": "机器人 / 自动化接入",
 	"settings.botEndpointDesc":
-		"本机 HTTP 服务。把会议链接（Zoom、Teams、Meet、Webex 等）POST 过来后，应用会用系统默认浏览器或客户端打开会议并开始按显示器全屏捕获（音频与截图间隔使用你在上方保存的「捕获」配置）。",
+		"本机 HTTP 服务。把会议链接（Zoom、Teams、Meet、Webex 等）POST 过来后，应用会像「加入会议」一样处理：用客户端打开、录制会议窗口与系统声音、实时转写（使用当前设置）。",
 	"settings.botEndpointEnable": "启用本机监听",
 	"settings.botEndpointPort": "端口",
 	"settings.botEndpointSecret": "共享密钥（可选）",

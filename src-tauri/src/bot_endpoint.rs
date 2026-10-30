@@ -1,13 +1,11 @@
-//! Local HTTP endpoint so external bots / scripts can POST a meeting URL; the app opens the
-//! meeting in the default handler (browser or native client) and starts display capture using
-//! preferences synced from the React settings store.
+//! Local HTTP endpoint so external bots / scripts can POST a meeting URL; the app joins the
+//! meeting (native client deep link when possible), finds the meeting window and starts
+//! background capture using preferences synced from the React settings store.
 
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::thread;
-use std::time::Duration;
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -16,9 +14,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::AppHandle;
 
-use crate::start_capture_session_inner;
+use crate::asr::AsrConfig;
+use crate::meeting_join::{self, JoinMeetingRequest};
 use crate::CaptureStartOptions;
 
 static BOT_SERVER_TASK: Mutex<Option<tauri::async_runtime::JoinHandle<()>>> = Mutex::new(None);
@@ -50,6 +49,14 @@ pub struct BotCapturePrefs {
     pub frame_interval_sec: u64,
     pub capture_display_index: u32,
     pub silent_capture_minimize_main: bool,
+    #[serde(default)]
+    pub system_audio: bool,
+    #[serde(default)]
+    pub include_microphone: bool,
+    #[serde(default)]
+    pub live_asr: Option<AsrConfig>,
+    #[serde(default)]
+    pub live_segment_sec: Option<u64>,
 }
 
 impl Default for BotCapturePrefs {
@@ -61,6 +68,10 @@ impl Default for BotCapturePrefs {
             frame_interval_sec: 2,
             capture_display_index: 1,
             silent_capture_minimize_main: true,
+            system_audio: true,
+            include_microphone: false,
+            live_asr: None,
+            live_segment_sec: None,
         }
     }
 }
@@ -123,45 +134,6 @@ pub fn sync_bot_capture_prefs_file(prefs: &BotCapturePrefs) -> Result<(), String
     Ok(())
 }
 
-fn open_meeting_url(url: &str) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let status = std::process::Command::new("open")
-            .arg(url)
-            .status()
-            .map_err(|e| format!("failed to run open: {e}"))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(format!("open exited with status {status}"))
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let status = std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .status()
-            .map_err(|e| format!("failed to run start: {e}"))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(format!("start exited with status {status}"))
-        }
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        let status = std::process::Command::new("xdg-open")
-            .arg(url)
-            .status()
-            .map_err(|e| format!("failed to run xdg-open: {e}"))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(format!("xdg-open exited with status {status}"))
-        }
-    }
-}
-
 fn validate_meeting_url(url: &str) -> Result<(), String> {
     let t = url.trim();
     if t.is_empty() {
@@ -170,8 +142,8 @@ fn validate_meeting_url(url: &str) -> Result<(), String> {
     if t.len() > 4096 {
         return Err("meetingUrl is too long".to_string());
     }
-    if !(t.starts_with("https://") || t.starts_with("http://")) {
-        return Err("meetingUrl must start with http:// or https://".to_string());
+    if meeting_join::extract_meeting_url(t).is_none() {
+        return Err("meetingUrl must contain an http(s):// meeting link".to_string());
     }
     Ok(())
 }
@@ -198,6 +170,8 @@ fn verify_secret(config: &BotEndpointConfig, headers: &HeaderMap, body_secret: O
 struct MeetingPostBody {
     meeting_url: String,
     secret: Option<String>,
+    /// Optional session title (e.g. the calendar event name).
+    title: Option<String>,
 }
 
 #[derive(Clone)]
@@ -232,43 +206,40 @@ async fn meeting_handler(
     }
 
     let app = state.app.clone();
-    let url = body.meeting_url.trim().to_string();
-
-    let result = thread::spawn(move || {
-        open_meeting_url(&url)?;
-        thread::sleep(Duration::from_millis(400));
-        let prefs = load_bot_capture_prefs();
-        let options = CaptureStartOptions {
+    let prefs = load_bot_capture_prefs();
+    let request = JoinMeetingRequest {
+        meeting: body.meeting_url.trim().to_string(),
+        capture: CaptureStartOptions {
             audio_input_specs: prefs.audio_input_specs.clone(),
             sample_rate: Some(prefs.sample_rate),
             channels: Some(prefs.channels),
             frame_interval_sec: Some(prefs.frame_interval_sec),
-        };
-        let display_idx = prefs.capture_display_index.max(1);
-        let session_id = start_capture_session_inner(
-            app.clone(),
-            Some(options),
-            None,
-            Some(display_idx),
-            Some(true),
-        )?;
-        if prefs.silent_capture_minimize_main {
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.minimize();
-            }
-        }
-        let _ = app.emit(
-            "bot-capture-started",
-            json!({ "sessionId": session_id.clone() }),
-        );
-        Ok::<String, String>(session_id)
+            system_audio: prefs.system_audio,
+            include_microphone: Some(prefs.include_microphone),
+            live_asr: prefs.live_asr.clone(),
+            live_segment_sec: prefs.live_segment_sec,
+            title: body.title.clone(),
+            auto_stop_on_window_close: Some(true),
+        },
+        fallback_display_index: Some(prefs.capture_display_index.max(1)),
+        wait_window_sec: None,
+        minimize_main: prefs.silent_capture_minimize_main,
+    };
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        meeting_join::join_meeting_and_capture(&app, request)
     })
-    .join();
+    .await;
 
     match result {
-        Ok(Ok(session_id)) => (
+        Ok(Ok(joined)) => (
             StatusCode::OK,
-            Json(json!({ "ok": true, "sessionId": session_id })),
+            Json(json!({
+                "ok": true,
+                "sessionId": joined.session_id,
+                "platform": joined.platform,
+                "captured": joined.captured,
+            })),
         )
             .into_response(),
         Ok(Err(e)) => {

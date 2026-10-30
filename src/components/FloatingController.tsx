@@ -1,43 +1,70 @@
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useState } from "react";
+import { formatClock } from "../lib/captureOptions";
 import { useT } from "../lib/i18n";
 import {
-	getCapturePaused,
+	type CaptureStatus,
+	getCaptureStatus,
 	setCapturePaused,
 	stopCaptureSession,
 } from "../lib/tauri";
+import type { TranscriptSegment } from "../types";
 
 export function FloatingController(): JSX.Element {
 	const t = useT();
-	const [elapsed, setElapsed] = useState(0);
+	const [status, setStatus] = useState<CaptureStatus | null>(null);
 	const [stopping, setStopping] = useState(false);
 	const [paused, setPaused] = useState(false);
 	const [pauseBusy, setPauseBusy] = useState(false);
+	const [caption, setCaption] = useState<string>("");
 
+	// Elapsed time, pause state and source come from the backend so they stay correct even if
+	// this window is recreated mid-session.
 	useEffect(() => {
-		void getCapturePaused()
-			.then(setPaused)
-			.catch(() => {
-				/* window may load before capture state exists */
-			});
+		let cancelled = false;
+		const poll = (): void => {
+			void getCaptureStatus()
+				.then((s) => {
+					if (cancelled) return;
+					setStatus(s);
+					if (typeof s.paused === "boolean") setPaused(s.paused);
+				})
+				.catch(() => {});
+		};
+		poll();
+		const timer = setInterval(poll, 1000);
+		return () => {
+			cancelled = true;
+			clearInterval(timer);
+		};
 	}, []);
 
 	useEffect(() => {
-		if (paused) {
-			return;
-		}
-		const interval = setInterval(() => {
-			setElapsed((prev) => prev + 1);
-		}, 1000);
-		return () => clearInterval(interval);
-	}, [paused]);
+		let unlisten: (() => void) | undefined;
+		let disposed = false;
+		void listen<{ sessionId: string; segment: TranscriptSegment }>(
+			"live-transcript",
+			(event) => setCaption(event.payload.segment.text),
+		).then((un) => {
+			if (disposed) un();
+			else unlisten = un;
+		});
+		return () => {
+			disposed = true;
+			unlisten?.();
+		};
+	}, []);
 
-	const formatTime = (seconds: number): string => {
-		const m = Math.floor(seconds / 60)
-			.toString()
-			.padStart(2, "0");
-		const s = (seconds % 60).toString().padStart(2, "0");
-		return `${m}:${s}`;
+	const statusLine = (): string => {
+		if (!status?.running) return "";
+		if (status.targetLost) return t("float.targetLost");
+		const parts = [status.sourceLabel ?? ""];
+		if (status.systemAudio) parts.push(t("float.systemAudio"));
+		else if (status.recordingAudio) parts.push(t("float.micAudio"));
+		else parts.push(t("float.noAudio"));
+		if (status.liveTranscript) parts.push(t("float.liveOn"));
+		return parts.filter(Boolean).join(" · ");
 	};
 
 	const handleStop = async () => {
@@ -139,9 +166,9 @@ export function FloatingController(): JSX.Element {
 					width: "100%",
 					height: "100%",
 					display: "flex",
-					alignItems: "center",
-					justifyContent: "space-between",
-					gap: 8,
+					flexDirection: "column",
+					justifyContent: "center",
+					gap: 4,
 					padding: "6px 10px",
 					borderRadius: 12,
 					background: "rgba(24, 24, 27, 0.42)",
@@ -161,68 +188,96 @@ export function FloatingController(): JSX.Element {
 					style={{
 						display: "flex",
 						alignItems: "center",
-						gap: 6,
-						pointerEvents: "none",
-						minWidth: 0,
+						justifyContent: "space-between",
+						gap: 8,
 					}}
 				>
 					<div
 						style={{
-							width: 7,
-							height: 7,
-							borderRadius: "50%",
-							flexShrink: 0,
-							background: paused ? "#eab308" : "#ef4444",
-							animation: paused
-								? "paused-pulse 2s ease-in-out infinite"
-								: "rec-pulse 1.4s ease-in-out infinite",
-							boxShadow: paused
-								? "0 0 6px rgba(234,179,8,0.45)"
-								: "0 0 6px rgba(239,68,68,0.45)",
+							display: "flex",
+							alignItems: "center",
+							gap: 6,
+							pointerEvents: "none",
+							minWidth: 0,
 						}}
-					/>
-					<span style={{ fontWeight: 600, fontSize: 11, letterSpacing: 0.4 }}>
-						{paused ? "‖" : "●"} REC
+					>
+						<div
+							style={{
+								width: 7,
+								height: 7,
+								borderRadius: "50%",
+								flexShrink: 0,
+								background: paused ? "#eab308" : "#ef4444",
+								animation: paused
+									? "paused-pulse 2s ease-in-out infinite"
+									: "rec-pulse 1.4s ease-in-out infinite",
+								boxShadow: paused
+									? "0 0 6px rgba(234,179,8,0.45)"
+									: "0 0 6px rgba(239,68,68,0.45)",
+							}}
+						/>
+						<span style={{ fontWeight: 600, fontSize: 11, letterSpacing: 0.4 }}>
+							{paused ? "‖" : "●"} REC
+						</span>
+					</div>
+
+					<span
+						style={{
+							fontVariantNumeric: "tabular-nums",
+							fontWeight: 500,
+							fontSize: 13,
+							letterSpacing: 0.4,
+							pointerEvents: "none",
+							opacity: paused ? 0.65 : 1,
+						}}
+					>
+						{formatClock(status?.elapsedSec ?? 0)}
 					</span>
+
+					<div
+						style={{
+							display: "flex",
+							alignItems: "center",
+							gap: 6,
+							flexShrink: 0,
+						}}
+					>
+						<button
+							type="button"
+							className="float-btn float-pause"
+							disabled={pauseBusy}
+							onClick={() => void handleTogglePause()}
+						>
+							{pauseBusy ? "…" : paused ? t("float.resume") : t("float.pause")}
+						</button>
+						<button
+							type="button"
+							className="float-btn float-stop"
+							disabled={stopping}
+							onClick={() => void handleStop()}
+						>
+							{stopping ? "…" : t("float.stop")}
+						</button>
+					</div>
 				</div>
-
-				<span
-					style={{
-						fontVariantNumeric: "tabular-nums",
-						fontWeight: 500,
-						fontSize: 13,
-						letterSpacing: 0.4,
-						pointerEvents: "none",
-						opacity: paused ? 0.65 : 1,
-					}}
-				>
-					{formatTime(elapsed)}
-				</span>
-
 				<div
+					title={caption || statusLine()}
 					style={{
-						display: "flex",
-						alignItems: "center",
-						gap: 6,
-						flexShrink: 0,
+						pointerEvents: "none",
+						fontSize: 11,
+						lineHeight: "15px",
+						opacity: caption ? 0.95 : 0.7,
+						overflow: "hidden",
+						display: "-webkit-box",
+						WebkitLineClamp: 2,
+						WebkitBoxOrient: "vertical",
 					}}
 				>
-					<button
-						type="button"
-						className="float-btn float-pause"
-						disabled={pauseBusy}
-						onClick={() => void handleTogglePause()}
-					>
-						{pauseBusy ? "…" : paused ? t("float.resume") : t("float.pause")}
-					</button>
-					<button
-						type="button"
-						className="float-btn float-stop"
-						disabled={stopping}
-						onClick={() => void handleStop()}
-					>
-						{stopping ? "…" : t("float.stop")}
-					</button>
+					{caption
+						? caption.length > 110
+							? `…${caption.slice(-110)}`
+							: caption
+						: statusLine()}
 				</div>
 			</div>
 		</>

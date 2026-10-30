@@ -6,8 +6,11 @@ export type ThemeDensity = "compact" | "comfortable";
 export type ThemeMode = "light" | "dark" | "system";
 export type AppLanguage = "en" | "zh";
 export type AsrProvider = "whisper_cpp" | "openai_compatible";
-/** Region overlay selection vs whole-screen capture on a chosen display (background-friendly). */
-export type CaptureSourceMode = "region" | "display";
+/**
+ * window: one app window (e.g. Zoom) captured in the background, even when covered;
+ * display: a whole monitor; region: an area picked with the overlay.
+ */
+export type CaptureSourceMode = "window" | "display" | "region";
 
 export interface AppSettings {
 	modelProvider: ModelProvider;
@@ -36,6 +39,16 @@ export interface AppSettings {
 	captureDisplayIndex: number;
 	/** Minimize main window when starting whole-display silent capture. */
 	silentCaptureMinimizeMain: boolean;
+	/** Record system playback (meeting audio) via the built-in helper — no BlackHole needed. */
+	captureSystemAudio: boolean;
+	/** With system audio on: also mix in the microphones selected under Audio Inputs. */
+	captureIncludeMic: boolean;
+	/** Transcribe while recording and show live captions. */
+	liveTranscriptEnabled: boolean;
+	/** Length of each live transcription chunk in seconds (latency vs. accuracy). */
+	liveSegmentSec: number;
+	/** Window capture: stop automatically when the meeting window closes. */
+	autoStopOnWindowClose: boolean;
 }
 
 interface SettingsState extends AppSettings {
@@ -61,6 +74,11 @@ interface SettingsState extends AppSettings {
 	setCaptureSourceMode: (mode: CaptureSourceMode) => void;
 	setCaptureDisplayIndex: (index: number) => void;
 	setSilentCaptureMinimizeMain: (value: boolean) => void;
+	setCaptureSystemAudio: (value: boolean) => void;
+	setCaptureIncludeMic: (value: boolean) => void;
+	setLiveTranscriptEnabled: (value: boolean) => void;
+	setLiveSegmentSec: (sec: number) => void;
+	setAutoStopOnWindowClose: (value: boolean) => void;
 	resetDefaults: () => void;
 }
 
@@ -84,9 +102,14 @@ const defaultSettings: AppSettings = {
 	openRouterApiKey: "",
 	openRouterMaxTokens: 8192,
 	tavilyApiKey: "",
-	captureSourceMode: "region",
+	captureSourceMode: "window",
 	captureDisplayIndex: 1,
 	silentCaptureMinimizeMain: true,
+	captureSystemAudio: true,
+	captureIncludeMic: false,
+	liveTranscriptEnabled: true,
+	liveSegmentSec: 10,
+	autoStopOnWindowClose: true,
 };
 
 export const useSettingsStore = create<SettingsState>()(
@@ -132,6 +155,18 @@ export const useSettingsStore = create<SettingsState>()(
 				}),
 			setSilentCaptureMinimizeMain: (value) =>
 				set({ silentCaptureMinimizeMain: value }),
+			setCaptureSystemAudio: (value) => set({ captureSystemAudio: value }),
+			setCaptureIncludeMic: (value) => set({ captureIncludeMic: value }),
+			setLiveTranscriptEnabled: (value) =>
+				set({ liveTranscriptEnabled: value }),
+			setLiveSegmentSec: (sec) =>
+				set({
+					liveSegmentSec: Number.isFinite(sec)
+						? Math.max(5, Math.min(60, Math.floor(sec)))
+						: 10,
+				}),
+			setAutoStopOnWindowClose: (value) =>
+				set({ autoStopOnWindowClose: value }),
 			resetDefaults: () => set(defaultSettings),
 		}),
 		{
@@ -160,6 +195,11 @@ export const useSettingsStore = create<SettingsState>()(
 				captureSourceMode: state.captureSourceMode,
 				captureDisplayIndex: state.captureDisplayIndex,
 				silentCaptureMinimizeMain: state.silentCaptureMinimizeMain,
+				captureSystemAudio: state.captureSystemAudio,
+				captureIncludeMic: state.captureIncludeMic,
+				liveTranscriptEnabled: state.liveTranscriptEnabled,
+				liveSegmentSec: state.liveSegmentSec,
+				autoStopOnWindowClose: state.autoStopOnWindowClose,
 			}),
 		},
 	),

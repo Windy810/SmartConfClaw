@@ -8,6 +8,27 @@ export interface AcademicSession {
 	extendedReport: string;
 	qaSimulator: QAMock[];
 	references: Reference[];
+	/** Wall seconds from start to stop (null while recording / for old captures). */
+	durationSec?: number | null;
+	minutes?: MeetingMinutes | null;
+	/** Timestamped transcript (live or chunked transcription). */
+	transcriptSegments?: TranscriptSegment[];
+	captureStatus?: string;
+}
+
+export interface TranscriptSegment {
+	index: number;
+	/** Seconds since session start (same clock as timeline timestamps). */
+	startSec: number;
+	endSec: number;
+	text: string;
+}
+
+export interface MeetingMinutes {
+	keyPoints?: string[];
+	decisions?: string[];
+	actionItems?: { task: string; owner?: string; due?: string }[];
+	openQuestions?: string[];
 }
 
 export interface Reference {

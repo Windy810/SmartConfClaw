@@ -1,6 +1,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useState } from "react";
 
+import { formatClock } from "../lib/captureOptions";
 import { useT } from "../lib/i18n";
 import type { AcademicSession, TimelineItem } from "../types";
 import { SessionQaChat } from "./SessionQaChat";
@@ -48,6 +49,29 @@ export function SessionViewer({ session }: SessionViewerProps): JSX.Element {
 		setActiveTimelineId(session.timeline[0]?.id ?? "");
 	}, [session.timeline]);
 
+	const [showFullTranscript, setShowFullTranscript] = useState(false);
+	const segments = session.transcriptSegments ?? [];
+	const minutes = session.minutes ?? null;
+	const actionItems = (minutes?.actionItems ?? []).filter((a) =>
+		a.task?.trim(),
+	);
+	const minuteLists: { label: string; items: string[] }[] = [
+		{ label: t("viewer.keyPoints"), items: minutes?.keyPoints ?? [] },
+		{ label: t("viewer.decisions"), items: minutes?.decisions ?? [] },
+		{ label: t("viewer.openQuestions"), items: minutes?.openQuestions ?? [] },
+	].filter((l) => l.items.length > 0);
+	const hasMinutes = minuteLists.length > 0 || actionItems.length > 0;
+	const dateLabel = session.date ? new Date(session.date).toLocaleString() : "";
+
+	/** Select the slide that was on screen when this transcript line was spoken. */
+	const jumpToTime = (sec: number): void => {
+		let target = session.timeline[0];
+		for (const item of session.timeline) {
+			if (item.timestamp <= sec) target = item;
+		}
+		if (target) setActiveTimelineId(target.id);
+	};
+
 	const activeItem = useMemo<TimelineItem | undefined>(
 		() =>
 			session.timeline.find((item) => item.id === activeTimelineId) ??
@@ -70,6 +94,18 @@ export function SessionViewer({ session }: SessionViewerProps): JSX.Element {
 			<Card className="min-h-0">
 				<CardHeader className="space-y-3 border-b border-zinc-200/80 pb-4 dark:border-zinc-800">
 					<CardTitle className="text-lg">{session.title}</CardTitle>
+					{dateLabel || session.durationSec ? (
+						<p className="text-xs text-zinc-500 dark:text-zinc-400">
+							{[
+								dateLabel,
+								session.durationSec
+									? `${t("viewer.duration")} ${formatClock(session.durationSec)}`
+									: "",
+							]
+								.filter(Boolean)
+								.join(" · ")}
+						</p>
+					) : null}
 					<div className="flex flex-wrap items-center gap-2">
 						{session.tags.map((tag) => (
 							<Badge key={tag} variant="secondary">
@@ -121,6 +157,39 @@ export function SessionViewer({ session }: SessionViewerProps): JSX.Element {
 								{activeItem.originalTranscript}
 							</p>
 						</div>
+						{segments.length > 0 ? (
+							<div className="rounded-xl border border-zinc-200/80 p-4 dark:border-zinc-800">
+								<button
+									type="button"
+									className="flex w-full items-center justify-between text-left text-sm font-semibold text-zinc-800 dark:text-zinc-200"
+									onClick={() => setShowFullTranscript((v) => !v)}
+								>
+									<span>
+										{t("viewer.fullTranscript")} ({segments.length})
+									</span>
+									<span className="text-xs font-normal text-zinc-500">
+										{showFullTranscript ? t("qa.hide") : t("viewer.show")}
+									</span>
+								</button>
+								{showFullTranscript ? (
+									<div className="mt-3 max-h-[360px] space-y-1.5 overflow-y-auto pr-1">
+										{segments.map((seg) => (
+											<button
+												key={seg.index}
+												type="button"
+												onClick={() => jumpToTime(seg.startSec)}
+												className="block w-full rounded-md px-2 py-1 text-left text-sm leading-relaxed text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+											>
+												<span className="mr-2 font-mono text-[11px] text-zinc-400">
+													{formatClock(seg.startSec)}
+												</span>
+												{seg.text}
+											</button>
+										))}
+									</div>
+								) : null}
+							</div>
+						) : null}
 					</div>
 				</CardContent>
 			</Card>
@@ -138,6 +207,45 @@ export function SessionViewer({ session }: SessionViewerProps): JSX.Element {
 							{session.extendedReport || activeItem.summary}
 						</p>
 					</div>
+
+					{hasMinutes ? (
+						<div className="rounded-xl border border-zinc-200/80 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+							<h3 className="mb-3 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+								{t("viewer.minutes")}
+							</h3>
+							<div className="space-y-3">
+								{minuteLists.map((list) => (
+									<div key={list.label}>
+										<p className="mb-1 text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+											{list.label}
+										</p>
+										<ul className="list-disc space-y-0.5 pl-5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
+											{list.items.map((item) => (
+												<li key={item}>{item}</li>
+											))}
+										</ul>
+									</div>
+								))}
+								{actionItems.length > 0 ? (
+									<div>
+										<p className="mb-1 text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+											{t("viewer.actionItems")}
+										</p>
+										<ul className="space-y-0.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">
+											{actionItems.map((a) => (
+												<li key={a.task}>
+													☐ {a.task}
+													{[a.owner, a.due].filter((v) => v?.trim()).length > 0
+														? ` (${[a.owner, a.due].filter((v) => v?.trim()).join(", ")})`
+														: ""}
+												</li>
+											))}
+										</ul>
+									</div>
+								) : null}
+							</div>
+						</div>
+					) : null}
 
 					{session.concepts && session.concepts.length > 0 ? (
 						<div className="rounded-xl border border-zinc-200/80 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
