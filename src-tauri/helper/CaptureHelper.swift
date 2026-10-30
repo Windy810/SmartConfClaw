@@ -103,14 +103,19 @@ func listWindows() {
     emitJSON(result)
 }
 
+func describeError(_ error: Error) -> String {
+    let ns = error as NSError
+    return "\(ns.localizedDescription) [\(ns.domain) \(ns.code)]"
+}
+
+/// Runs the main run loop (ScreenCaptureKit delivers callbacks through it) until exit().
+func runMainLoop() -> Never {
+    NSApplication.shared.run()
+    exit(0)
+}
+
 @available(macOS 14.0, *)
-func captureWindowScreenshot(windowID: UInt32, outPath: String) async throws {
-    let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-    guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
-        throw NSError(domain: "SmartConfCapture", code: 2, userInfo: [
-            NSLocalizedDescriptionKey: "window \(windowID) not found (closed?)",
-        ])
-    }
+func captureIndependentWindow(_ window: SCWindow) async throws -> CGImage {
     let filter = SCContentFilter(desktopIndependentWindow: window)
     let config = SCStreamConfiguration()
     // Retina windows are captured at up to 2× points; plenty for slide text.
@@ -119,7 +124,51 @@ func captureWindowScreenshot(windowID: UInt32, outPath: String) async throws {
     config.height = max(Int(window.frame.height * scale), 2)
     config.showsCursor = false
     config.ignoreShadowsSingleWindow = true
-    let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+    return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+}
+
+@available(macOS 14.0, *)
+func captureWindowOnDisplay(_ window: SCWindow, display: SCDisplay) async throws -> CGImage {
+    let filter = SCContentFilter(display: display, including: [window])
+    let config = SCStreamConfiguration()
+    let local = window.frame
+        .offsetBy(dx: -display.frame.origin.x, dy: -display.frame.origin.y)
+        .intersection(CGRect(origin: .zero, size: display.frame.size))
+    guard local.width >= 2, local.height >= 2 else {
+        throw NSError(domain: "SmartConfCapture", code: 4, userInfo: [
+            NSLocalizedDescriptionKey: "window is not on any display (minimized or on another Space?)",
+        ])
+    }
+    let scale = CGFloat(min(filter.pointPixelScale, 2))
+    config.sourceRect = local
+    config.width = max(Int(local.width * scale), 2)
+    config.height = max(Int(local.height * scale), 2)
+    config.showsCursor = false
+    return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+}
+
+@available(macOS 14.0, *)
+func captureWindowScreenshot(windowID: UInt32, outPath: String) async throws {
+    let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+    guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
+        throw NSError(domain: "SmartConfCapture", code: 2, userInfo: [
+            NSLocalizedDescriptionKey: "window \(windowID) not found (closed?)",
+        ])
+    }
+    let image: CGImage
+    do {
+        image = try await captureIndependentWindow(window)
+    } catch {
+        // Some windows refuse the "desktop independent" filter; capture the display with only this
+        // window included, cropped to its frame (other windows still excluded, so covering is OK).
+        logLine("independent-window capture failed: \(describeError(error)); trying display filter")
+        guard let display = content.displays.first(where: { $0.frame.intersects(window.frame) })
+            ?? content.displays.first
+        else {
+            throw error
+        }
+        image = try await captureWindowOnDisplay(window, display: display)
+    }
 
     let url = URL(fileURLWithPath: outPath) as CFURL
     guard let destination = CGImageDestinationCreateWithURL(url, "public.png" as CFString, 1, nil) else {
@@ -337,10 +386,10 @@ case "screenshot":
             try await captureWindowScreenshot(windowID: windowID, outPath: outPath)
             exit(0)
         } catch {
-            fail("Window screenshot failed: \(error.localizedDescription)", code: 2)
+            fail("Window screenshot failed: \(describeError(error))", code: 2)
         }
     }
-    dispatchMain()
+    runMainLoop()
 case "request-permission":
     emitJSON(["granted": CGRequestScreenCaptureAccess()])
 case "system-audio":
@@ -362,11 +411,11 @@ case "system-audio":
             try await tap.start()
             logLine("system audio capture started (\(sampleRate) Hz mono f32le)")
         } catch {
-            fail("Failed to start system audio capture: \(error.localizedDescription). "
+            fail("Failed to start system audio capture: \(describeError(error)). "
                 + "Grant Screen Recording permission in System Settings › Privacy & Security.", code: 2)
         }
     }
-    dispatchMain()
+    runMainLoop()
 default:
     fail("unknown command: \(arguments[1])")
 }
